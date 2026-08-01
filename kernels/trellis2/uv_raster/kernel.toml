@@ -4,8 +4,7 @@ model = "microsoft/TRELLIS.2"
 operation = "uv_position_rasterize"
 port = "cuda-to-metal"
 backends = ["cpu", "metal"]
-cmake_preset = "trellis2-uv-raster"
-benchmark = "kernels/trellis2/uv_raster/kg_trellis2_uv_raster_bench"
+benchmark = "kernel/kg_trellis2_uv_raster_bench"
 
 [upstream]
 repository = "https://github.com/microsoft/TRELLIS.2"

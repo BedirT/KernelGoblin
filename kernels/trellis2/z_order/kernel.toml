@@ -4,8 +4,7 @@ model = "microsoft/TRELLIS.2"
 operation = "z_order_encode_decode"
 port = "cuda-to-metal"
 backends = ["cpu", "metal"]
-cmake_preset = "trellis2-z-order"
-benchmark = "kernels/trellis2/z_order/kg_trellis2_z_order_bench"
+benchmark = "kernel/kg_trellis2_z_order_bench"
 
 [upstream]
 repository = "https://github.com/microsoft/TRELLIS.2"

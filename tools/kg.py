@@ -162,12 +162,26 @@ def require_backend(manifest: dict) -> None:
 
 def configure(manifest: dict) -> None:
     require_backend(manifest)
-    run(["cmake", "--preset", manifest["cmake_preset"]])
-    run(["cmake", "--build", "--preset", manifest["cmake_preset"]])
+    build_dir = kernel_build_dir(manifest)
+    source_dir = manifest["_path"].parent.relative_to(ROOT).as_posix()
+    run([
+        "cmake", "-S", ".", "-B", str(build_dir), "-G", "Ninja",
+        "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_TESTING=ON",
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        f"-DKG_SELECTED_KERNEL_DIR={source_dir}",
+    ])
+    run(["cmake", "--build", str(build_dir)])
 
 
-def command_list(_: argparse.Namespace) -> None:
+def kernel_build_dir(manifest: dict) -> Path:
+    return ROOT / "build" / "kernels" / manifest["id"]
+
+
+def command_list(args: argparse.Namespace) -> None:
     for item in manifests().values():
+        if args.ids:
+            print(item["id"])
+            continue
         backends = " -> ".join(item["backends"])
         print(f"{item['id']:<24} {backends:<16} {item['description']}")
 
@@ -210,7 +224,7 @@ def command_validate(_: argparse.Namespace) -> None:
         expected = item["_path"].parent.relative_to(ROOT / "kernels").as_posix()
         if kernel_id != expected:
             errors.append(f"{item['_path']}: id {kernel_id!r} must match {expected!r}")
-        for field in ("description", "model", "operation", "port", "backends", "cmake_preset", "benchmark"):
+        for field in ("description", "model", "operation", "port", "backends", "benchmark"):
             if not item.get(field):
                 errors.append(f"{item['_path']}: missing {field}")
         upstream = item.get("upstream", {})
@@ -327,13 +341,13 @@ def command_setup(args: argparse.Namespace) -> None:
 def command_test(args: argparse.Namespace) -> None:
     item = kernel(args.kernel)
     configure(item)
-    run(["ctest", "--preset", item["cmake_preset"]])
+    run(["ctest", "--test-dir", str(kernel_build_dir(item)), "--output-on-failure"])
 
 
 def command_benchmark(args: argparse.Namespace) -> None:
     item = kernel(args.kernel)
     configure(item)
-    executable = ROOT / "build" / item["cmake_preset"] / item["benchmark"]
+    executable = kernel_build_dir(item) / item["benchmark"]
     run([str(executable)])
 
 
@@ -731,7 +745,9 @@ def command_model_texture(args: argparse.Namespace) -> None:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="kg", description=__doc__)
     commands = result.add_subparsers(dest="command", required=True)
-    commands.add_parser("list", help="list available kernel ports").set_defaults(func=command_list)
+    list_command = commands.add_parser("list", help="list available kernel ports")
+    list_command.add_argument("--ids", action="store_true", help="print stable IDs only")
+    list_command.set_defaults(func=command_list)
     commands.add_parser("doctor", help="check native build tools").set_defaults(func=command_doctor)
     commands.add_parser("validate", help="validate manifests and agent harness").set_defaults(func=command_validate)
     for name, help_text, function in (

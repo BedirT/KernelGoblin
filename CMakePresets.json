@@ -7,56 +7,29 @@
   },
   "configurePresets": [
     {
-      "name": "base",
-      "hidden": true,
+      "name": "kernel",
+      "displayName": "Selected KernelGoblin kernel",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/${presetName}",
+      "binaryDir": "${sourceDir}/build/manual",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_TESTING": "ON",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
-      }
-    },
-    {
-      "name": "trellis2-z-order",
-      "displayName": "TRELLIS.2 Z-order (Metal)",
-      "inherits": "base",
-      "cacheVariables": {
-        "KG_BUILD_TRELLIS2_Z_ORDER": "ON"
-      }
-    },
-    {
-      "name": "trellis2-uv-raster",
-      "displayName": "TRELLIS.2 UV raster (Metal)",
-      "inherits": "base",
-      "cacheVariables": {
-        "KG_BUILD_TRELLIS2_UV_RASTER": "ON"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "KG_SELECTED_KERNEL_DIR": "$env{KG_SELECTED_KERNEL_DIR}"
       }
     }
   ],
   "buildPresets": [
     {
-      "name": "trellis2-z-order",
-      "configurePreset": "trellis2-z-order",
-      "jobs": 0
-    },
-    {
-      "name": "trellis2-uv-raster",
-      "configurePreset": "trellis2-uv-raster",
+      "name": "kernel",
+      "configurePreset": "kernel",
       "jobs": 0
     }
   ],
   "testPresets": [
     {
-      "name": "trellis2-z-order",
-      "configurePreset": "trellis2-z-order",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "trellis2-uv-raster",
-      "configurePreset": "trellis2-uv-raster",
+      "name": "kernel",
+      "configurePreset": "kernel",
       "output": {
         "outputOnFailure": true
       }

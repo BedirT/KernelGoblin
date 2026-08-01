@@ -8,8 +8,10 @@ Required top-level fields:
 - `operation`: stable machine-readable operation name.
 - `port`: `cuda-to-metal`, `cuda-to-cuda`, or another explicit route.
 - `backends`: reference first, then accelerator backends.
-- `cmake_preset`: selective root preset.
-- `benchmark`: executable path relative to its preset build directory.
+- `benchmark`: executable path relative to its selected build directory.
+
+The manifest directory is the build registration boundary. Adding a kernel must
+not require a new root CMake option, preset, or CI entry.
 
 Required `[upstream]` fields:
 

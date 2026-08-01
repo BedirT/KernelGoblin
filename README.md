@@ -282,6 +282,20 @@ not install a model, and adding a future CUDA optimization should not make an
 Apple user build it. The checked-in `$port-gpu-kernel` skill and `AGENTS.md`
 give Codex the same verification rules we use manually.
 
+`kernel.toml` is the registration boundary. A new kernel brings its own
+`CMakeLists.txt`, tests, and benchmark; root CMake and CI discover it without a
+new switch. The manual equivalent of `./kg test trellis2/z_order` is:
+
+```sh
+cmake -S . -B build/manual -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_TESTING=ON \
+  -DKG_SELECTED_KERNEL_DIR=kernels/trellis2/z_order
+cmake --build build/manual
+ctest --test-dir build/manual --output-on-failure
+./build/manual/kernel/kg_trellis2_z_order_bench
+```
+
 ## Repository Map
 
 | Path | Purpose |

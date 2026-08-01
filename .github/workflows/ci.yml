@@ -21,5 +21,8 @@ jobs:
         run: ./kg model native-audit trellis2
       # GitHub-hosted macOS VMs do not constitute physical-GPU verification.
       # Real Metal conformance remains an explicit local/self-hosted `kg test`.
-      - name: Compile Metal kernel and host harness
-        run: ./kg setup trellis2/z_order
+      - name: Compile every registered kernel and host harness
+        run: |
+          for kernel in $(./kg list --ids); do
+            ./kg setup "$kernel"
+          done
