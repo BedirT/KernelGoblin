@@ -516,6 +516,21 @@ class PrimitiveTests(unittest.TestCase):
             mesh.export(path)
             self.assertGreater(path.stat().st_size, 100)
 
+    def test_complete_pbr_layout_stays_vertex_color_without_opt_in(self) -> None:
+        mesh = to_glb(
+            torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+            torch.tensor([[0, 1, 2]], dtype=torch.int32),
+            torch.tensor([[0.25, 0.5, 0.75, 0.1, 0.9, 1.0]]),
+            torch.tensor([[0, 0, 0]], dtype=torch.int32),
+            attr_layout={
+                "base_color": slice(0, 3), "metallic": slice(3, 4),
+                "roughness": slice(4, 5), "alpha": slice(5, 6),
+            },
+            aabb=[[0, 0, 0], [1, 1, 1]], grid_size=[1, 1, 1],
+        )
+        self.assertNotIn("kernel_goblin_pbr", mesh.metadata)
+        self.assertEqual(mesh.visual.vertex_colors.shape, (3, 4))
+
     def test_portable_glb_uses_upstream_axis_conversion(self) -> None:
         vertices = torch.tensor(
             [[0.0, 1.0, 2.0], [1.0, 1.0, 2.0], [0.0, 2.0, 2.0]]

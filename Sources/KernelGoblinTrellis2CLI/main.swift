@@ -35,12 +35,12 @@ enum KernelGoblinTrellis2Command {
 
     private static func verifyDinoLinear(url: URL) throws {
         let expectedSHA256 = "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179"
-        let actualSHA256 = try fileSHA256(at: url)
+        let context = try MetalContext()
+        let checkpoint = try MappedCheckpoint(url: url, device: context.device)
+        let actualSHA256 = try checkpoint.sha256()
         guard actualSHA256 == expectedSHA256 else {
             throw Exit.checksumMismatch(expected: expectedSHA256, actual: actualSHA256)
         }
-        let context = try MetalContext()
-        let checkpoint = try MappedCheckpoint(url: url, device: context.device)
         let weight = try checkpoint.descriptor(named: "layer.0.attention.q_proj.weight")
         let bias = try checkpoint.descriptor(named: "layer.0.attention.q_proj.bias")
         guard weight.dtype == .f32, weight.shape == [1024, 1024],
@@ -103,13 +103,12 @@ enum KernelGoblinTrellis2Command {
 
     private static func verifySLatInputLayer(url: URL) throws {
         let expectedSHA256 = "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f"
-        let actualSHA256 = try fileSHA256(at: url)
+        let context = try MetalContext()
+        let checkpoint = try MappedCheckpoint(url: url, device: context.device)
+        let actualSHA256 = try checkpoint.sha256()
         guard actualSHA256 == expectedSHA256 else {
             throw Exit.checksumMismatch(expected: expectedSHA256, actual: actualSHA256)
         }
-
-        let context = try MetalContext()
-        let checkpoint = try MappedCheckpoint(url: url, device: context.device)
         let weight = try checkpoint.descriptor(named: "input_layer.weight")
         let bias = try checkpoint.descriptor(named: "input_layer.bias")
         guard weight.dtype == .bf16, weight.shape == [1536, 32],

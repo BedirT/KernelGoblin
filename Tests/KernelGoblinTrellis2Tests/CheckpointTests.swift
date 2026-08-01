@@ -76,6 +76,7 @@ struct CheckpointTests {
             .assumingMemoryBound(to: Float.self)
         #expect(pointer[0] == 1.25)
         #expect(pointer[1] == -2.5)
+        #expect(try checkpoint.sha256() == fileSHA256(at: url))
         values.removeAll()
     }
 

@@ -225,6 +225,10 @@ def parse_args():
         "--alpha-mode", choices=("OPAQUE", "BLEND", "MASK"), default="OPAQUE",
         help="glTF alpha behavior; OPAQUE preserves pinned upstream semantics",
     )
+    parser.add_argument(
+        "--experimental-pbr", action="store_true",
+        help="use the unverified portable UV/PBR export instead of the proven vertex-color path",
+    )
     return parser.parse_args()
 
 
@@ -306,9 +310,10 @@ def main() -> None:
         decimation_target=args.decimation_target,
         texture_size=args.texture_size,
         alpha_mode=args.alpha_mode,
+        pbr_backend="metal-experimental" if args.experimental_pbr else None,
     )
     pbr_evidence = glb.metadata.get("kernel_goblin_pbr")
-    if pbr_evidence is None:
+    if args.experimental_pbr and pbr_evidence is None:
         raise RuntimeError("TRELLIS.2 export did not execute the PBR bake path")
     glb.export(glb_path)
     import trimesh
@@ -316,13 +321,16 @@ def main() -> None:
     reloaded = trimesh.load(glb_path, force="mesh", process=False)
     if len(reloaded.vertices) == 0 or len(reloaded.faces) == 0:
         raise RuntimeError("exported GLB did not reload with non-empty geometry")
-    if getattr(reloaded.visual, "uv", None) is None:
-        raise RuntimeError("exported GLB did not reload with UV coordinates")
-    material = getattr(reloaded.visual, "material", None)
-    if material is None or material.baseColorTexture is None:
-        raise RuntimeError("exported GLB is missing its base-color texture")
-    if material.metallicRoughnessTexture is None:
-        raise RuntimeError("exported GLB is missing its metallic-roughness texture")
+    if args.experimental_pbr:
+        if getattr(reloaded.visual, "uv", None) is None:
+            raise RuntimeError("exported GLB did not reload with UV coordinates")
+        material = getattr(reloaded.visual, "material", None)
+        if material is None or material.baseColorTexture is None:
+            raise RuntimeError("exported GLB is missing its base-color texture")
+        if material.metallicRoughnessTexture is None:
+            raise RuntimeError("exported GLB is missing its metallic-roughness texture")
+    elif getattr(reloaded.visual, "vertex_colors", None) is None:
+        raise RuntimeError("exported reference GLB did not retain vertex colors")
 
     def sha256(path: Path) -> str:
         digest = hashlib.sha256()
@@ -365,8 +373,11 @@ def main() -> None:
             "trellis_image_large": "25e0d31ffbebe4b5a97464dd851910efc3002d96",
             "dinov3": DINO_REVISION,
         },
-        "export": "UV-mapped PBR GLB with Metal rasterization",
-        "pbr": pbr_evidence,
+        "export": (
+            "experimental UV-mapped PBR GLB with Metal rasterization"
+            if args.experimental_pbr else "verified vertex-color GLB"
+        ),
+        "pbr": pbr_evidence if args.experimental_pbr else None,
     }
     (args.output / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(json.dumps(evidence, indent=2))

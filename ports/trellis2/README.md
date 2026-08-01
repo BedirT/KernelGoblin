@@ -71,6 +71,14 @@ pinned configuration.
   --output build/trellis2/output-1024
 ```
 
+These default commands retain the previously verified vertex-color export.
+Run the portable material path only through its explicit experimental gate:
+
+```sh
+./kg model run trellis2 --experimental-pbr \
+  --input image.png --output build/trellis2/output-pbr
+```
+
 `--seed` defaults to `42`. `--steps N` is useful for failure-finding, but a
 one-step smoke run is never presented as default-quality evidence.
 

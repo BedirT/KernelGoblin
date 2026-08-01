@@ -121,8 +121,9 @@ swift run -c release kg-trellis2 \
   verify-slat-input-layer /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors
 ```
 
-It verifies the pinned checkpoint SHA-256, validates the complete safetensors
-range table, maps 2.584 GB into Metal without a heap-sized weight copy, and
+It validates the complete safetensors range table, maps 2.584 GB into Metal
+without a heap-sized weight copy, hashes that exact mapping against the pinned
+checkpoint SHA-256, and
 executes `input_layer` for deterministic input `[17,32]`. Metal widens the
 stored BF16 `[1536,32]` weight and bias to F32 arithmetic. All 26,112 F32
 outputs are compared with a CPU calculation and then compared bit-for-bit

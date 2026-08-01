@@ -213,6 +213,8 @@ def command_model_run(args: argparse.Namespace) -> None:
         command.append("--no-preprocess")
     if args.steps is not None:
         command.extend(["--steps", str(args.steps)])
+    if args.experimental_pbr:
+        command.append("--experimental-pbr")
     command.extend([
         "--texture-size", str(args.texture_size),
         "--decimation-target", str(args.decimation_target),
@@ -278,6 +280,7 @@ def parser() -> argparse.ArgumentParser:
     model_run.add_argument("--decimation-target", type=int, default=1_000_000)
     model_run.add_argument("--alpha-mode", choices=("OPAQUE", "BLEND", "MASK"), default="OPAQUE")
     model_run.add_argument("--no-preprocess", action="store_true")
+    model_run.add_argument("--experimental-pbr", action="store_true")
     model_run.set_defaults(func=command_model_run)
     model_texture = model_commands.add_parser(
         "texture", help="texture an existing mesh with TRELLIS.2"

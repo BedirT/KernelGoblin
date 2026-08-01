@@ -14,11 +14,13 @@ def to_glb(
     vertices, faces, attr_volume=None, coords=None, attr_layout=None,
     aabb=((-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)), voxel_size=None,
     grid_size=None, decimation_target=1_000_000, texture_size=2048,
-    alpha_mode="OPAQUE", **kwargs,
+    alpha_mode="OPAQUE", pbr_backend=None, **kwargs,
 ):
     layout = attr_layout or {}
     pbr_layout = {"base_color", "metallic", "roughness"}.issubset(layout)
-    if attr_volume is not None and coords is not None and pbr_layout:
+    if pbr_backend not in {None, "metal-experimental"}:
+        raise ValueError("pbr_backend must be None or 'metal-experimental'")
+    if pbr_backend == "metal-experimental" and attr_volume is not None and coords is not None and pbr_layout:
         surface = prepare_surface(
             vertices.detach().cpu().numpy(), faces.detach().cpu().numpy(),
             texture_size=texture_size, decimation_target=decimation_target,

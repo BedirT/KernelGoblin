@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 import Metal
 
@@ -60,6 +61,23 @@ public final class MappedCheckpoint: @unchecked Sendable {
         }
         let start = Int(tensor.fileOffset)
         return start..<(start + Int(tensor.byteCount))
+    }
+
+    public func sha256(chunkSize: Int = 8 * 1024 * 1024) throws -> String {
+        guard chunkSize > 0, validByteCount <= UInt64(Int.max) else {
+            throw NativeRuntimeError.invalidArgument("invalid mapped SHA-256 byte range")
+        }
+        var hasher = SHA256()
+        let total = Int(validByteCount)
+        var offset = 0
+        while offset < total {
+            let count = min(chunkSize, total - offset)
+            hasher.update(bufferPointer: UnsafeRawBufferPointer(
+                start: buffer.contents().advanced(by: offset), count: count
+            ))
+            offset += count
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private static func roundUp(_ value: UInt64, alignment: UInt64) throws -> UInt64 {

@@ -115,7 +115,7 @@ swift run -c release kg-trellis2 \
   verify-slat-input-layer /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors
 ```
 
-The command hashes the complete file and requires SHA-256
+The command hashes the exact memory mapping that Metal will read and requires SHA-256
 `ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f`.
 It then validates all 640 tensor ranges, maps 2,584,576,000 page-rounded bytes,
 and runs the actual BF16 `input_layer.weight [1536,32]` and bias for 17 rows.

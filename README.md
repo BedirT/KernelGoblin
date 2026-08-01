@@ -205,7 +205,17 @@ authenticate once.
   --output build/trellis2/output-1024
 ```
 
-The reference code is not the desired shipping architecture. Its job is to
+Those commands preserve the proven vertex-color export. The portable PBR path
+is deliberately explicit until its upstream mesh fixtures pass:
+
+```sh
+./kg model run trellis2 --experimental-pbr \
+  --input image.png --output build/trellis2/output-pbr
+```
+
+The experimental flag runs real Metal rasterization and glTF material packing,
+but it does not yet carry an upstream-parity or completed full-run claim. The
+reference code itself is not the desired shipping architecture. Its job is to
 provide real checkpoints, intermediate fixtures, end-to-end artifacts, and a
 known behavior contract while we remove Torch from the production path.
 
