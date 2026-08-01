@@ -322,9 +322,22 @@ def command_model_native_test(args: argparse.Namespace) -> None:
             "native TRELLIS.2 conformance requires the pinned texture-flow checkpoint; "
             "pass --texture-checkpoint FILE.safetensors"
         )
+    dino_checkpoint = (
+        Path(args.dino_checkpoint).expanduser().resolve() if args.dino_checkpoint else (
+            Path.home() / ".cache" / "huggingface" / "hub"
+            / "models--facebook--dinov3-vitl16-pretrain-lvd1689m" / "snapshots"
+            / "ea8dc2863c51be0a264bab82070e3e8836b02d51" / "model.safetensors"
+        )
+    )
+    if not dino_checkpoint.is_file():
+        raise SystemExit(
+            "native TRELLIS.2 conformance requires the separately gated pinned DINOv3 "
+            "checkpoint; pass --dino-checkpoint FILE.safetensors"
+        )
     environment = os.environ.copy()
     environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"] = str(checkpoint)
     environment["KG_TRELLIS2_TEXTURE_FLOW_CHECKPOINT"] = str(texture_checkpoint)
+    environment["KG_TRELLIS2_DINO_CHECKPOINT"] = str(dino_checkpoint)
     run(["swift", "test", "--parallel"], env=environment)
 
 
@@ -475,6 +488,7 @@ def parser() -> argparse.ArgumentParser:
         if name == "native-test":
             sub.add_argument("--checkpoint")
             sub.add_argument("--texture-checkpoint")
+            sub.add_argument("--dino-checkpoint")
         sub.set_defaults(func=function)
     model_run = model_commands.add_parser("run", help="run real model inference")
     model_run.add_argument("model")

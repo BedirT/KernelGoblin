@@ -27,6 +27,7 @@ public final class MetalContext: @unchecked Sendable {
         let source = try String(contentsOf: url, encoding: .utf8)
         let options = MTLCompileOptions()
         options.languageVersion = .version3_0
+        options.fastMathEnabled = true
         return try device.makeLibrary(source: source, options: options)
     }
 

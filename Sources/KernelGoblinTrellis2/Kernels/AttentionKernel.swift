@@ -38,14 +38,21 @@ public final class AttentionKernel: @unchecked Sendable {
 
     private let context: MetalContext
     private let pipeline: MTLComputePipelineState
+    private let simdgroupPipeline: MTLComputePipelineState
 
     public init(context: MetalContext) throws {
         self.context = context
         let library = try context.library(named: "identity")
-        guard let function = library.makeFunction(name: "kg_fused_attention_f32") else {
+        guard let function = library.makeFunction(name: "kg_fused_attention_f32"),
+              let simdgroupFunction = library.makeFunction(
+                  name: "kg_simdgroup_attention_f32"
+              ) else {
             throw NativeRuntimeError.invalidArgument("fused attention Metal function is missing")
         }
         self.pipeline = try context.device.makeComputePipelineState(function: function)
+        self.simdgroupPipeline = try context.device.makeComputePipelineState(
+            function: simdgroupFunction
+        )
     }
 
     public func fusedF32(
@@ -107,14 +114,18 @@ public final class AttentionKernel: @unchecked Sendable {
               let encoder = command.makeComputeCommandEncoder() else {
             throw NativeRuntimeError.allocationFailed("could not create fused attention command")
         }
-        encoder.setComputePipelineState(pipeline)
+        // DINOv3 uses D=64. Keep the established D=128 SLat reduction path
+        // until its production-token differential fixture is available.
+        let useSIMDGroup = dimensions == 64
+            && simdgroupPipeline.threadExecutionWidth == 32
+            && simdgroupPipeline.maxTotalThreadsPerThreadgroup >= 256
+        encoder.setComputePipelineState(useSIMDGroup ? simdgroupPipeline : pipeline)
         for segment in 0..<querySegments.segmentCount {
             let queryStart = querySegments.offsets[segment]
             let queryCount = querySegments.offsets[segment + 1] - queryStart
             let keyStart = keySegments.offsets[segment]
             let keyCount = keySegments.offsets[segment + 1] - keyStart
             if queryCount == 0 { continue }
-            let groups = try checkedProduct(queryCount, heads, 1)
             var parameters = Parameters(
                 queryCount: UInt32(queryCount), keyCount: UInt32(keyCount),
                 heads: UInt32(heads), dimensions: UInt32(dimensions),
@@ -125,10 +136,18 @@ public final class AttentionKernel: @unchecked Sendable {
             encoder.setBuffer(values, offset: keyStart * rowBytes, index: 2)
             encoder.setBuffer(output, offset: queryStart * rowBytes, index: 3)
             encoder.setBytes(&parameters, length: MemoryLayout<Parameters>.stride, index: 4)
-            encoder.dispatchThreadgroups(
-                MTLSize(width: groups, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: dimensions, height: 1, depth: 1)
-            )
+            if useSIMDGroup {
+                encoder.dispatchThreadgroups(
+                    MTLSize(width: (queryCount + 7) / 8, height: heads, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1)
+                )
+            } else {
+                let groups = try checkedProduct(queryCount, heads, 1)
+                encoder.dispatchThreadgroups(
+                    MTLSize(width: groups, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: dimensions, height: 1, depth: 1)
+                )
+            }
         }
         encoder.endEncoding()
         command.commit()

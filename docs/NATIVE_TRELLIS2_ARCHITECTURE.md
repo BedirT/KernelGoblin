@@ -194,3 +194,27 @@ semantic source because it already carries packed signed-Int32 query and
 key/value offsets. The planned optimization is a narrow attributed port of its
 forward varlen tiling, not a dependency on ccv's full C++ runtime. The existing
 online-softmax kernel remains the independent oracle and fallback.
+
+## Complete Native DINOv3 Stage
+
+Image conditioning now has a complete production-resolution model stage. The
+native graph validates the gated checkpoint hash and every required tensor,
+then executes ViT-L/16 patch embedding, CLS plus four register tokens, dynamic
+two-dimensional RoPE, 24 transformer blocks, exact-semantic GELU, LayerScale,
+and TRELLIS's parameter-free final LayerNorm. A 512-square input produces all
+1,029 tokens of width 1,024.
+
+The physical-Metal test compares the complete output with an immutable F32
+fixture generated from the pinned TRELLIS and DINO revisions. Maximum absolute
+error is `5.2928925e-5` and RMS error is `1.9124438e-6`. On the Apple M3 Pro
+verification host, the model graph took 2.23 seconds and the hard-bounded arena
+peaked at 75,866,112 bytes. Metal compilation explicitly enables fast math;
+the full-output tolerance captures the resulting reduction and transcendental
+differences rather than pretending cross-backend values are bit-exact.
+
+This is a model-stage result, not raw-image-to-conditioning proof. The fixture
+begins with an exact normalized NCHW tensor. Native parity for image decode,
+alpha-aware preprocessing, Lanczos resize, RGB quantization, and ImageNet
+normalization remains a separate acceptance gate. The result also remains
+arena-backed until the synchronized `StageSession` lifecycle is complete, so
+the current peak number is not yet a stage-release claim.

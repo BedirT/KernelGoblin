@@ -4,6 +4,25 @@ This directory is not part of the native runtime. It contains small tools for
 capturing immutable behavior from the pinned upstream Torch implementation so
 the Swift + Metal port can be tested without importing Torch.
 
+The DINO exporter captures the complete TRELLIS image-conditioning graph from
+an authenticated gated checkpoint. A tiny input records every block boundary;
+the production 512 fixture records the exact normalized input and complete
+`[1,1029,1024]` output without inflating the repository with 24 intermediate
+production activations:
+
+```sh
+build/trellis2/.venv/bin/python \
+  ports/trellis2/oracles/export_dino_stage_fixture.py \
+  --checkpoint /path/to/dinov3/model.safetensors \
+  --image-size 512 \
+  --output-prefix \
+    Tests/KernelGoblinTrellis2Tests/Fixtures/dino-stage-512
+```
+
+The exporter requires the exact pinned TRELLIS checkout and checkpoint
+SHA-256 before it writes anything. Torch is required only for regeneration;
+the committed fixture is consumed by the dependency-free Swift test suite.
+
 `export_slat_block_fixture.py` loads only block 0 from the authenticated
 `shape_slat_flow_model_512` checkpoint, runs two deterministic BF16 tokens with
 the production 3D RoPE path, and

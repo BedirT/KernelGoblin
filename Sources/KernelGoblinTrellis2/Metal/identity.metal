@@ -72,6 +72,202 @@ kernel void kg_linear_bf16_weights_f32_output(
   output[index] = value;
 }
 
+constant uint kg_linear_tile = 16;
+
+kernel void kg_linear_tiled_f32(
+    const device float* input [[buffer(0)]],
+    const device uchar* checkpoint [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant LinearF32Params& params [[buffer(3)]],
+    uint2 group [[threadgroup_position_in_grid]],
+    uint2 local [[thread_position_in_threadgroup]]) {
+  threadgroup float input_tile[16 * 16];
+  threadgroup float weight_tile[16 * 16];
+  const uint row = group.y * kg_linear_tile + local.y;
+  const uint output_channel = group.x * kg_linear_tile + local.x;
+  const device float* weight =
+      reinterpret_cast<const device float*>(checkpoint + params.weight_offset);
+  const device float* bias =
+      reinterpret_cast<const device float*>(checkpoint + params.bias_offset);
+  float value = output_channel < params.output_channels && params.has_bias
+      ? bias[output_channel]
+      : 0.0f;
+
+  for (uint channel_base = 0; channel_base < params.input_channels;
+       channel_base += kg_linear_tile) {
+    const uint channel = channel_base + local.x;
+    input_tile[local.y * kg_linear_tile + local.x] =
+        row < params.rows && channel < params.input_channels
+            ? input[row * params.input_channels + channel]
+            : 0.0f;
+    const uint tile_output_channel = group.x * kg_linear_tile + local.y;
+    weight_tile[local.y * kg_linear_tile + local.x] =
+        tile_output_channel < params.output_channels && channel < params.input_channels
+            ? weight[tile_output_channel * params.input_channels + channel]
+            : 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (row < params.rows && output_channel < params.output_channels) {
+      for (uint tile_channel = 0; tile_channel < kg_linear_tile; ++tile_channel) {
+        value = fma(
+            input_tile[local.y * kg_linear_tile + tile_channel],
+            weight_tile[local.x * kg_linear_tile + tile_channel],
+            value);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  if (row < params.rows && output_channel < params.output_channels) {
+    output[row * params.output_channels + output_channel] = value;
+  }
+}
+
+kernel void kg_linear_tiled_bf16_weights_f32_output(
+    const device float* input [[buffer(0)]],
+    const device uchar* checkpoint [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant LinearF32Params& params [[buffer(3)]],
+    uint2 group [[threadgroup_position_in_grid]],
+    uint2 local [[thread_position_in_threadgroup]]) {
+  threadgroup float input_tile[16 * 16];
+  threadgroup float weight_tile[16 * 16];
+  const uint row = group.y * kg_linear_tile + local.y;
+  const uint output_channel = group.x * kg_linear_tile + local.x;
+  const device ushort* weight =
+      reinterpret_cast<const device ushort*>(checkpoint + params.weight_offset);
+  const device ushort* bias =
+      reinterpret_cast<const device ushort*>(checkpoint + params.bias_offset);
+  float value = output_channel < params.output_channels && params.has_bias
+      ? kg_bf16_to_f32(bias[output_channel])
+      : 0.0f;
+
+  for (uint channel_base = 0; channel_base < params.input_channels;
+       channel_base += kg_linear_tile) {
+    const uint channel = channel_base + local.x;
+    input_tile[local.y * kg_linear_tile + local.x] =
+        row < params.rows && channel < params.input_channels
+            ? input[row * params.input_channels + channel]
+            : 0.0f;
+    const uint tile_output_channel = group.x * kg_linear_tile + local.y;
+    weight_tile[local.y * kg_linear_tile + local.x] =
+        tile_output_channel < params.output_channels && channel < params.input_channels
+            ? kg_bf16_to_f32(
+                  weight[tile_output_channel * params.input_channels + channel])
+            : 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (row < params.rows && output_channel < params.output_channels) {
+      for (uint tile_channel = 0; tile_channel < kg_linear_tile; ++tile_channel) {
+        value = fma(
+            input_tile[local.y * kg_linear_tile + tile_channel],
+            weight_tile[local.x * kg_linear_tile + tile_channel],
+            value);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  if (row < params.rows && output_channel < params.output_channels) {
+    output[row * params.output_channels + output_channel] = value;
+  }
+}
+
+struct PatchEmbedF32Params {
+  ulong weight_offset;
+  ulong bias_offset;
+  uint image_height;
+  uint image_width;
+  uint patch_size;
+  uint input_channels;
+  uint output_channels;
+  uint output_token_offset;
+};
+
+kernel void kg_dino_patch_embed_f32(
+    const device float* image [[buffer(0)]],
+    const device uchar* checkpoint [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant PatchEmbedF32Params& params [[buffer(3)]],
+    uint index [[thread_position_in_grid]]) {
+  const ulong patches_h = ulong(params.image_height / params.patch_size);
+  const ulong patches_w = ulong(params.image_width / params.patch_size);
+  const ulong patch_count = patches_h * patches_w;
+  const ulong count = patch_count * ulong(params.output_channels);
+  if (ulong(index) >= count) return;
+  const ulong patch = ulong(index) / ulong(params.output_channels);
+  const ulong output_channel = ulong(index) % ulong(params.output_channels);
+  const ulong patch_y = patch / patches_w;
+  const ulong patch_x = patch % patches_w;
+  const device float* weight =
+      reinterpret_cast<const device float*>(checkpoint + params.weight_offset);
+  const device float* bias =
+      reinterpret_cast<const device float*>(checkpoint + params.bias_offset);
+  const ulong kernel_area = ulong(params.patch_size) * ulong(params.patch_size);
+  float value = bias[output_channel];
+  for (ulong channel = 0; channel < ulong(params.input_channels); ++channel) {
+    const ulong image_channel_base =
+        channel * ulong(params.image_height) * ulong(params.image_width);
+    const ulong weight_channel_base =
+        (output_channel * ulong(params.input_channels) + channel) * kernel_area;
+    for (ulong y = 0; y < ulong(params.patch_size); ++y) {
+      const ulong image_y = patch_y * ulong(params.patch_size) + y;
+      for (ulong x = 0; x < ulong(params.patch_size); ++x) {
+        const ulong image_x = patch_x * ulong(params.patch_size) + x;
+        value = fma(
+            image[image_channel_base + image_y * ulong(params.image_width) + image_x],
+            weight[weight_channel_base + y * ulong(params.patch_size) + x],
+            value);
+      }
+    }
+  }
+  output[(patch + ulong(params.output_token_offset)) * ulong(params.output_channels)
+         + output_channel] = value;
+}
+
+struct DinoRopeF32Params {
+  uint token_count;
+  uint prefix_tokens;
+  uint patches_h;
+  uint patches_w;
+  uint heads;
+  uint dimensions;
+  float theta;
+};
+
+kernel void kg_dino_rope_f32(
+    const device float* input [[buffer(0)]],
+    device float* output [[buffer(1)]],
+    constant DinoRopeF32Params& params [[buffer(2)]],
+    uint index [[thread_position_in_grid]]) {
+  const uint count = params.token_count * params.heads * params.dimensions;
+  if (index >= count) return;
+  const uint token_stride = params.heads * params.dimensions;
+  const uint token = index / token_stride;
+  if (token < params.prefix_tokens) {
+    output[index] = input[index];
+    return;
+  }
+  const uint patch = token - params.prefix_tokens;
+  const uint patch_y = patch / params.patches_w;
+  const uint patch_x = patch % params.patches_w;
+  const uint dimension = index % params.dimensions;
+  const uint half_dimensions = params.dimensions / 2;
+  const uint quarter = params.dimensions / 4;
+  const uint angle_dimension = dimension % half_dimensions;
+  const uint axis = angle_dimension / quarter;
+  const uint frequency = angle_dimension % quarter;
+  const float coordinate = axis == 0
+      ? 2.0f * ((float(patch_y) + 0.5f) / float(params.patches_h)) - 1.0f
+      : 2.0f * ((float(patch_x) + 0.5f) / float(params.patches_w)) - 1.0f;
+  const float inverse_frequency = pow(
+      params.theta, -4.0f * float(frequency) / float(params.dimensions));
+  const float angle = 2.0f * M_PI_F * coordinate * inverse_frequency;
+  const uint vector_base = index - dimension;
+  const float rotated = dimension < half_dimensions
+      ? -input[vector_base + dimension + half_dimensions]
+      : input[vector_base + dimension - half_dimensions];
+  output[index] = fma(input[index], cos(angle), rotated * sin(angle));
+}
+
 struct TimestepEmbeddingParams {
   uint rows;
   uint dimensions;
@@ -147,6 +343,38 @@ kernel void kg_layer_norm_f32(
       value = fma(value, kg_bf16_to_f32(weight[channel]), kg_bf16_to_f32(bias[channel]));
     }
     output[base + channel] = value;
+  }
+}
+
+kernel void kg_layer_norm_f32_affine_f32(
+    const device float* input [[buffer(0)]],
+    const device uchar* checkpoint [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant LayerNormParams& params [[buffer(3)]],
+    uint row [[thread_position_in_grid]]) {
+  if (row >= params.rows) return;
+  const uint base = row * params.channels;
+  float mean = 0.0f;
+  for (uint channel = 0; channel < params.channels; ++channel) {
+    mean += input[base + channel];
+  }
+  mean /= float(params.channels);
+  float variance = 0.0f;
+  for (uint channel = 0; channel < params.channels; ++channel) {
+    const float centered = input[base + channel] - mean;
+    variance = fma(centered, centered, variance);
+  }
+  variance /= float(params.channels);
+  const float inverse_std = rsqrt(variance + params.epsilon);
+  const device float* weight =
+      reinterpret_cast<const device float*>(checkpoint + params.weight_offset);
+  const device float* bias =
+      reinterpret_cast<const device float*>(checkpoint + params.bias_offset);
+  for (uint channel = 0; channel < params.channels; ++channel) {
+    const float normalized = (input[base + channel] - mean) * inverse_std;
+    output[base + channel] = params.has_affine
+        ? fma(normalized, weight[channel], bias[channel])
+        : normalized;
   }
 }
 
@@ -281,6 +509,54 @@ kernel void kg_fused_attention_f32(
   output[query_base + dimension] = accumulator / running_sum;
 }
 
+constant uint kg_attention_queries_per_group = 8;
+
+kernel void kg_simdgroup_attention_f32(
+    const device float* queries [[buffer(0)]],
+    const device float* keys [[buffer(1)]],
+    const device float* values [[buffer(2)]],
+    device float* output [[buffer(3)]],
+    constant AttentionParams& params [[buffer(4)]],
+    uint2 group [[threadgroup_position_in_grid]],
+    uint simdgroup_index [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint query = group.x * kg_attention_queries_per_group + simdgroup_index;
+  const uint head = group.y;
+  if (query >= params.query_count || head >= params.heads) return;
+
+  const uint query_base = (query * params.heads + head) * params.dimensions;
+  float accumulators[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float running_max = -INFINITY;
+  float running_sum = 0.0f;
+  for (uint key = 0; key < params.key_count; ++key) {
+    const uint key_base = (key * params.heads + head) * params.dimensions;
+    float partial_score = 0.0f;
+    for (uint dimension = lane; dimension < params.dimensions; dimension += 32) {
+      partial_score = fma(
+          queries[query_base + dimension], keys[key_base + dimension], partial_score);
+    }
+    const float score = simd_sum(partial_score) * params.scale;
+    const float next_max = max(running_max, score);
+    const float previous_scale = exp(running_max - next_max);
+    const float current_scale = exp(score - next_max);
+    running_sum = running_sum * previous_scale + current_scale;
+    running_max = next_max;
+    for (uint slot = 0; slot < 4; ++slot) {
+      const uint dimension = lane + slot * 32;
+      if (dimension < params.dimensions) {
+        accumulators[slot] = accumulators[slot] * previous_scale
+            + current_scale * values[key_base + dimension];
+      }
+    }
+  }
+  for (uint slot = 0; slot < 4; ++slot) {
+    const uint dimension = lane + slot * 32;
+    if (dimension < params.dimensions) {
+      output[query_base + dimension] = accumulators[slot] / running_sum;
+    }
+  }
+}
+
 inline float kg_round_f32_to_bf16_value(float value) {
   uint bits = as_type<uint>(value);
   bits += 0x7FFFu + ((bits >> 16) & 1u);
@@ -350,6 +626,46 @@ kernel void kg_gelu_tanh_f32(
   constexpr float coefficient = 0.7978845608028654f;
   output[index] = 0.5f * x *
       (1.0f + tanh(coefficient * (x + 0.044715f * x * x * x)));
+}
+
+inline float kg_erf_f32(float value) {
+  const float sign = value < 0.0f ? -1.0f : 1.0f;
+  const float magnitude = abs(value);
+  const float t = 1.0f / (1.0f + 0.3275911f * magnitude);
+  const float polynomial =
+      (((((1.061405429f * t - 1.453152027f) * t) + 1.421413741f) * t
+          - 0.284496736f) * t + 0.254829592f) * t;
+  return sign * (1.0f - polynomial * exp(-magnitude * magnitude));
+}
+
+kernel void kg_gelu_erf_f32(
+    const device float* input [[buffer(0)]],
+    device float* output [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint index [[thread_position_in_grid]]) {
+  if (index >= count) return;
+  const float value = input[index];
+  output[index] = 0.5f * value
+      * (1.0f + kg_erf_f32(value * 0.7071067811865475f));
+}
+
+struct LayerScaleResidualF32Params {
+  ulong scale_offset;
+  uint count;
+  uint channels;
+};
+
+kernel void kg_layer_scale_residual_f32(
+    const device float* residual [[buffer(0)]],
+    const device float* branch [[buffer(1)]],
+    const device uchar* checkpoint [[buffer(2)]],
+    device float* output [[buffer(3)]],
+    constant LayerScaleResidualF32Params& params [[buffer(4)]],
+    uint index [[thread_position_in_grid]]) {
+  if (index >= params.count) return;
+  const device float* scale =
+      reinterpret_cast<const device float*>(checkpoint + params.scale_offset);
+  output[index] = fma(branch[index], scale[index % params.channels], residual[index]);
 }
 
 struct ModulateParams {

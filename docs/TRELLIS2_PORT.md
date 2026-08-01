@@ -12,10 +12,10 @@ Apple M3 Pro through a Torch/MPS reference runtime. The 1024 result fit in
 
 The production Apple port is **Swift + Metal with no Torch dependency**. It
 already validates and memory-maps real safetensors files, owns bounded Metal
-scratch, executes both complete TRELLIS SLat flows through native samplers, and
-includes native Morton and UV-raster kernels. Full native DINO, sparse
-structure, decoding, upstream-faithful PBR export, and existing-mesh texturing
-remain in progress.
+scratch, executes the complete 24-block DINOv3 conditioner and both TRELLIS
+SLat flows through native samplers, and includes native Morton and UV-raster
+kernels. Native raw-image preprocessing, sparse structure, decoding,
+upstream-faithful PBR export, and existing-mesh texturing remain in progress.
 
 That split is deliberate. A finished reference graph tells us what native code
 must match. A native kernel test tells us one operation is correct. Neither is
@@ -48,6 +48,7 @@ settings for all eight 512 components are machine-readable in
 | 1024 cascade | Verified Torch/MPS oracle | Default 12 steps, 15.28 GB RSS, zero process swaps |
 | Safetensors | Verified native foundation | Exact JSON integers, contiguous non-overlapping ranges, single-descriptor parse/map |
 | DINO q projection | Verified native slice | Hash-authenticated 1.21 GB checkpoint, F32 Metal/CPU differential |
+| DINOv3 512 conditioning | Verified native stage | Complete 24-block ViT-L/16, 1,029 tokens, max error `5.30e-5`, RMS `1.92e-6`, physical Metal |
 | TRELLIS shape input layer | Verified native slice | Hash-authenticated 2.58 GB checkpoint, BF16 weight decode, 26,112 outputs, zero BF16 bit mismatches |
 | TRELLIS timestep + shared adaLN | Verified native slice | Real Metal sinusoid, SiLU MLP, 9,216-channel modulation, zero BF16 bit mismatches |
 | TRELLIS block 0 | Verified native slice | Two-token 3D RoPE, normalization, fused self/cross attention, 8,192-channel MLP, adaLN, and residual graph; `0.01747` RMS against pinned Torch BF16 fixture |
@@ -59,7 +60,7 @@ settings for all eight 512 components are machine-readable in
 | UV raster | Verified analytic Metal slice | Physical render, analytic coverage/interpolation; nvdiffrast CUDA goldens pending |
 | PBR bake | Experimental reference | Synthetic component tests and GLB reload; upstream mesh semantics pending |
 | Existing-mesh texturing | In progress | Staged reference orchestration exists; complete artifact proof pending |
-| Full Swift + Metal model | In progress | Both complete SLat flows and samplers pass; full DINO, sparse structure, decoders, mesh extraction, and PBR assembly remain |
+| Full Swift + Metal model | In progress | Complete DINO and both SLat flows pass; image preprocessing, sparse structure, decoders, mesh extraction, and PBR assembly remain |
 
 ## What The Reference Run Does
 
@@ -138,6 +139,21 @@ matched the CPU calculation and all 26,112 BF16 outputs matched bit-for-bit.
 The same CLI verifies DINOv3's real `layer.0.attention.q_proj` only after
 authenticating its pinned SHA-256.
 
+The complete 512 conditioner now goes much further. Native Swift constructs
+the CLS and four register tokens, and Metal executes patch embedding, dynamic
+two-dimensional RoPE, all 24 attention and MLP blocks, LayerScale residuals,
+and TRELLIS's parameter-free final LayerNorm. The production geometry is
+`1,029 x 1,024`, not a reduced toy token count. Against a full F32 oracle from
+the pinned upstream implementation, the native result has maximum absolute
+error `5.2928925e-5` and RMS error `1.9124438e-6` over every output value.
+
+On the Apple M3 Pro verification host, the stage's measured model time was
+2.23 seconds and its heap-backed arena peaked at 75,866,112 bytes. This timing
+starts from an already normalized NCHW tensor and already mapped checkpoint;
+it does not include image decoding, alpha-aware cropping, Lanczos resizing, or
+checkpoint mapping. Those operations are deliberately still listed as open
+instead of being hidden inside the model number.
+
 The next conditioning slice is also native:
 
 ```sh
@@ -198,14 +214,16 @@ against pinned upstream outputs.
 
 ## Next Acceptance Gates
 
-1. Replace correctness-first quadratic attention with tiled Metal attention,
-   then run captured representative-token memory and timing gates.
-2. Implement sparse tensor topology, convolution, S2C/C2S, and decoder caches.
-3. Complete native DINO, sparse-structure flow/decoder, VAE stages, and
-   six-channel PBR decoding.
-4. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.
-5. Run existing-mesh texturing end to end with preserved and regenerated UVs.
-6. Profile only after parity, then optimize the measured bottlenecks.
+1. Reproduce alpha-aware crop, Lanczos resize, RGB conversion, and ImageNet
+   normalization in the native image loader.
+2. Prove synchronized stage teardown: queue drain, zero live arena bytes,
+   checkpoint unmap, and standalone output ownership.
+3. Implement the sparse-structure flow, occupancy decoder, sparse tensor
+   topology, convolution, S2C/C2S, and decoder caches.
+4. Complete shape and texture VAE stages and six-channel PBR decoding.
+5. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.
+6. Run existing-mesh texturing end to end with preserved and regenerated UVs.
+7. Profile only after parity, then optimize the measured bottlenecks.
 
 For the production package and memory contracts, continue with
 [`NATIVE_TRELLIS2_ARCHITECTURE.md`](NATIVE_TRELLIS2_ARCHITECTURE.md).

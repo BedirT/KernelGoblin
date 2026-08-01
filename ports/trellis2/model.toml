@@ -140,4 +140,9 @@ torch_policy = "oracle-only"
 [verification]
 physical_backend = "Metal"
 reference = "Pinned Torch/MPS and upstream CUDA golden fixtures"
+dino_512_status = "verified-native-stage"
+dino_512_tokens = 1029
+dino_512_max_absolute_error = 0.000052928925
+dino_512_rms_error = 0.0000019124438
+dino_512_arena_peak_bytes = 75866112
 full_model_status = "in-progress"

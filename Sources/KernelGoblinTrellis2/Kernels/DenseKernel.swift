@@ -13,19 +13,22 @@ public final class DenseKernel: @unchecked Sendable {
     private let context: MetalContext
     private let linearF32Pipeline: MTLComputePipelineState
     private let linearBF16WeightsPipeline: MTLComputePipelineState
+    private static let tileSize = 16
 
     public init(context: MetalContext) throws {
         self.context = context
         let library = try context.library(named: "identity")
-        guard let function = library.makeFunction(name: "kg_linear_f32") else {
-            throw NativeRuntimeError.invalidArgument("kg_linear_f32 is missing from Metal library")
+        guard let function = library.makeFunction(name: "kg_linear_tiled_f32") else {
+            throw NativeRuntimeError.invalidArgument(
+                "kg_linear_tiled_f32 is missing from Metal library"
+            )
         }
         self.linearF32Pipeline = try context.device.makeComputePipelineState(function: function)
         guard let bf16Function = library.makeFunction(
-            name: "kg_linear_bf16_weights_f32_output"
+            name: "kg_linear_tiled_bf16_weights_f32_output"
         ) else {
             throw NativeRuntimeError.invalidArgument(
-                "kg_linear_bf16_weights_f32_output is missing from Metal library"
+                "kg_linear_tiled_bf16_weights_f32_output is missing from Metal library"
             )
         }
         self.linearBF16WeightsPipeline = try context.device.makeComputePipelineState(
@@ -108,6 +111,7 @@ public final class DenseKernel: @unchecked Sendable {
         guard input.length >= inputBytes,
               checkpoint.length >= weightEnd,
               output.length >= outputBytes,
+              output !== input, output !== checkpoint,
               biasEnd.map({ checkpoint.length >= $0 }) ?? true,
               weightOffset % elementWidth == 0,
               biasOffset.map({ $0 % elementWidth == 0 }) ?? true
@@ -138,11 +142,19 @@ public final class DenseKernel: @unchecked Sendable {
         encoder.setBuffer(checkpoint, offset: 0, index: 1)
         encoder.setBuffer(output, offset: 0, index: 2)
         encoder.setBytes(&parameters, length: MemoryLayout<LinearF32Parameters>.stride, index: 3)
-        let count = rows * outputChannels
-        let width = min(pipeline.maxTotalThreadsPerThreadgroup, 256)
-        encoder.dispatchThreads(
-            MTLSize(width: count, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
+        let tile = Self.tileSize
+        guard pipeline.maxTotalThreadsPerThreadgroup >= tile * tile else {
+            throw NativeRuntimeError.invalidArgument(
+                "Metal device cannot dispatch the required dense tile"
+            )
+        }
+        encoder.dispatchThreadgroups(
+            MTLSize(
+                width: (outputChannels + tile - 1) / tile,
+                height: (rows + tile - 1) / tile,
+                depth: 1
+            ),
+            threadsPerThreadgroup: MTLSize(width: tile, height: tile, depth: 1)
         )
         encoder.endEncoding()
         command.commit()

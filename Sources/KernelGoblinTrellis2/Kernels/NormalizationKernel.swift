@@ -21,16 +21,23 @@ public final class NormalizationKernel: @unchecked Sendable {
 
     private let context: MetalContext
     private let layerNormPipeline: MTLComputePipelineState
+    private let layerNormF32AffinePipeline: MTLComputePipelineState
     private let rmsNormPipeline: MTLComputePipelineState
 
     public init(context: MetalContext) throws {
         self.context = context
         let library = try context.library(named: "identity")
         guard let layerNorm = library.makeFunction(name: "kg_layer_norm_f32"),
+              let layerNormF32Affine = library.makeFunction(
+                  name: "kg_layer_norm_f32_affine_f32"
+              ),
               let rmsNorm = library.makeFunction(name: "kg_multihead_rms_norm_f32") else {
             throw NativeRuntimeError.invalidArgument("normalization Metal functions are missing")
         }
         self.layerNormPipeline = try context.device.makeComputePipelineState(function: layerNorm)
+        self.layerNormF32AffinePipeline = try context.device.makeComputePipelineState(
+            function: layerNormF32Affine
+        )
         self.rmsNormPipeline = try context.device.makeComputePipelineState(function: rmsNorm)
     }
 
@@ -39,15 +46,44 @@ public final class NormalizationKernel: @unchecked Sendable {
         weightOffset: Int? = nil, biasOffset: Int? = nil, epsilon: Float = 1e-6,
         output: MTLBuffer
     ) throws {
+        try layerNorm(
+            pipeline: layerNormPipeline, affineWidth: 2,
+            input: input, checkpoint: checkpoint, rows: rows, channels: channels,
+            weightOffset: weightOffset, biasOffset: biasOffset,
+            epsilon: epsilon, output: output
+        )
+    }
+
+    public func layerNormF32WeightsF32(
+        input: MTLBuffer, checkpoint: MTLBuffer, rows: Int, channels: Int,
+        weightOffset: Int? = nil, biasOffset: Int? = nil, epsilon: Float = 1e-5,
+        output: MTLBuffer
+    ) throws {
+        try layerNorm(
+            pipeline: layerNormF32AffinePipeline, affineWidth: 4,
+            input: input, checkpoint: checkpoint, rows: rows, channels: channels,
+            weightOffset: weightOffset, biasOffset: biasOffset,
+            epsilon: epsilon, output: output
+        )
+    }
+
+    private func layerNorm(
+        pipeline: MTLComputePipelineState, affineWidth: Int,
+        input: MTLBuffer, checkpoint: MTLBuffer, rows: Int, channels: Int,
+        weightOffset: Int?, biasOffset: Int?, epsilon: Float,
+        output: MTLBuffer
+    ) throws {
         let affine = weightOffset != nil || biasOffset != nil
-        let affineBytes = try checkedByteCount(rows: 1, channels: channels, width: 2)
+        let affineBytes = try checkedByteCount(
+            rows: 1, channels: channels, width: affineWidth
+        )
         let weightEnd = try weightOffset.map { try checkedSum($0, affineBytes) }
         let biasEnd = try biasOffset.map { try checkedSum($0, affineBytes) }
         guard rows > 0, channels > 0, epsilon > 0,
               rows <= Int(UInt32.max), channels <= Int(UInt32.max),
               (!affine || (weightOffset != nil && biasOffset != nil)),
-              weightOffset.map({ $0 >= 0 && $0 % 2 == 0 }) ?? true,
-              biasOffset.map({ $0 >= 0 && $0 % 2 == 0 }) ?? true,
+              weightOffset.map({ $0 >= 0 && $0 % affineWidth == 0 }) ?? true,
+              biasOffset.map({ $0 >= 0 && $0 % affineWidth == 0 }) ?? true,
               fitsBuffer(rows, channels, width: 4, buffer: input),
               fitsBuffer(rows, channels, width: 4, buffer: output),
               weightEnd.map({ checkpoint.length >= $0 }) ?? true,
@@ -60,7 +96,7 @@ public final class NormalizationKernel: @unchecked Sendable {
             hasAffine: affine ? 1 : 0, epsilon: epsilon
         )
         try dispatch(
-            pipeline: layerNormPipeline, count: rows,
+            pipeline: pipeline, count: rows,
             buffers: [(input, 0), (checkpoint, 1), (output, 2)], parameters: &parameters
         )
     }

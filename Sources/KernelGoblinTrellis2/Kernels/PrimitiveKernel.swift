@@ -32,6 +32,12 @@ public final class PrimitiveKernel: @unchecked Sendable {
         var count: UInt32
     }
 
+    private struct LayerScaleResidualF32Parameters {
+        var scaleOffset: UInt64
+        var count: UInt32
+        var channels: UInt32
+    }
+
     private let context: MetalContext
     private let timestepPipeline: MTLComputePipelineState
     private let siluPipeline: MTLComputePipelineState
@@ -39,12 +45,14 @@ public final class PrimitiveKernel: @unchecked Sendable {
     private let splitQKVPipeline: MTLComputePipelineState
     private let splitKVPipeline: MTLComputePipelineState
     private let geluPipeline: MTLComputePipelineState
+    private let geluErfPipeline: MTLComputePipelineState
     private let modulatePipeline: MTLComputePipelineState
     private let modulateBF16Pipeline: MTLComputePipelineState
     private let residualPipeline: MTLComputePipelineState
     private let residualBF16Pipeline: MTLComputePipelineState
     private let addPipeline: MTLComputePipelineState
     private let addCheckpointBF16Pipeline: MTLComputePipelineState
+    private let layerScaleResidualF32Pipeline: MTLComputePipelineState
 
     public init(context: MetalContext) throws {
         self.context = context
@@ -55,12 +63,16 @@ public final class PrimitiveKernel: @unchecked Sendable {
               let splitQKV = library.makeFunction(name: "kg_split_qkv_f32"),
               let splitKV = library.makeFunction(name: "kg_split_kv_f32"),
               let gelu = library.makeFunction(name: "kg_gelu_tanh_f32"),
+              let geluErf = library.makeFunction(name: "kg_gelu_erf_f32"),
               let modulate = library.makeFunction(name: "kg_modulate_f32"),
               let modulateBF16 = library.makeFunction(name: "kg_modulate_bf16_f32"),
               let residual = library.makeFunction(name: "kg_residual_f32"),
               let residualBF16 = library.makeFunction(name: "kg_residual_bf16_f32"),
               let add = library.makeFunction(name: "kg_add_f32"),
-              let addCheckpoint = library.makeFunction(name: "kg_add_checkpoint_bf16_f32") else {
+              let addCheckpoint = library.makeFunction(name: "kg_add_checkpoint_bf16_f32"),
+              let layerScaleResidual = library.makeFunction(
+                  name: "kg_layer_scale_residual_f32"
+              ) else {
             throw NativeRuntimeError.invalidArgument("primitive Metal functions are missing")
         }
         self.timestepPipeline = try context.device.makeComputePipelineState(function: timestep)
@@ -69,6 +81,7 @@ public final class PrimitiveKernel: @unchecked Sendable {
         self.splitQKVPipeline = try context.device.makeComputePipelineState(function: splitQKV)
         self.splitKVPipeline = try context.device.makeComputePipelineState(function: splitKV)
         self.geluPipeline = try context.device.makeComputePipelineState(function: gelu)
+        self.geluErfPipeline = try context.device.makeComputePipelineState(function: geluErf)
         self.modulatePipeline = try context.device.makeComputePipelineState(function: modulate)
         self.modulateBF16Pipeline = try context.device.makeComputePipelineState(function: modulateBF16)
         self.residualPipeline = try context.device.makeComputePipelineState(function: residual)
@@ -76,6 +89,9 @@ public final class PrimitiveKernel: @unchecked Sendable {
         self.addPipeline = try context.device.makeComputePipelineState(function: add)
         self.addCheckpointBF16Pipeline = try context.device.makeComputePipelineState(
             function: addCheckpoint
+        )
+        self.layerScaleResidualF32Pipeline = try context.device.makeComputePipelineState(
+            function: layerScaleResidual
         )
     }
 
@@ -182,6 +198,37 @@ public final class PrimitiveKernel: @unchecked Sendable {
 
     public func geluTanhF32(input: MTLBuffer, count: Int, output: MTLBuffer) throws {
         try dispatchCounted(pipeline: geluPipeline, input: input, count: count, output: output)
+    }
+
+    public func geluErfF32(input: MTLBuffer, count: Int, output: MTLBuffer) throws {
+        try dispatchCounted(
+            pipeline: geluErfPipeline, input: input, count: count, output: output
+        )
+    }
+
+    public func layerScaleResidualF32(
+        residual: MTLBuffer, branch: MTLBuffer, checkpoint: MTLBuffer,
+        scaleOffset: Int, rows: Int, channels: Int, output: MTLBuffer
+    ) throws {
+        let elements = try elementCount(rows, channels)
+        let scaleBytes = channels.multipliedReportingOverflow(by: 4)
+        let scaleEnd = scaleOffset.addingReportingOverflow(scaleBytes.partialValue)
+        guard scaleOffset >= 0, scaleOffset % 4 == 0,
+              !scaleBytes.overflow, !scaleEnd.overflow,
+              checkpoint.length >= scaleEnd.partialValue else {
+            throw NativeRuntimeError.invalidArgument("invalid DINO LayerScale range")
+        }
+        try validateFloatBuffers([residual, branch, output], count: elements)
+        var parameters = LayerScaleResidualF32Parameters(
+            scaleOffset: UInt64(scaleOffset), count: UInt32(elements),
+            channels: UInt32(channels)
+        )
+        let data = withUnsafeBytes(of: &parameters) { Data($0) }
+        try dispatch(
+            pipeline: layerScaleResidualF32Pipeline, count: elements,
+            buffers: [(residual, 0), (branch, 1), (checkpoint, 2), (output, 3)],
+            bytes: (data, 4)
+        )
     }
 
     public func addF32(lhs: MTLBuffer, rhs: MTLBuffer, count: Int, output: MTLBuffer) throws {

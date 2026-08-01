@@ -55,6 +55,7 @@ baseline is exactly what the native Metal runtime is here to replace.
 | UV-space PBR raster | **Verified analytic Metal slice** | Physical Metal coverage, winding, degenerate, shared-edge, face-ID, and interpolation tests; CUDA nvdiffrast goldens remain |
 | Swift safetensors runtime | **Verified native foundation** | Parsed the real 1.21 GB DINOv3 checkpoint and mapped it into one no-copy `MTLBuffer` |
 | Real DINOv3 dense projection | **Verified native Metal slice** | `layer.0.attention.q_proj` from the pinned checkpoint, max absolute error `4.77e-7` against a CPU oracle |
+| Complete DINOv3 512 conditioner | **Verified native Metal stage** | All 24 ViT-L/16 blocks run over the real 1,029-token layout; full-output max error `5.30e-5`, RMS `1.92e-6`, 75.9 MB peak arena use, and 2.23 s model time on Apple M3 Pro |
 | Real TRELLIS shape-flow projection | **Verified native Metal slice** | Pinned 2.58 GB checkpoint, BF16 `[1536,32]` input layer, 17 rows, zero BF16 bit mismatches |
 | TRELLIS timestep + shared adaLN | **Verified native Metal slice** | Real sinusoid, two-layer SiLU MLP, and 9,216-channel modulation; zero BF16 bit mismatches |
 | TRELLIS cross-transformer block | **Verified native Metal slice** | Real block 0 normalization, 3D RoPE, two-token self-attention, cross-attention, 8,192-channel MLP, adaLN, and residuals match a pinned Torch BF16 fixture with `0.01747` RMS error |
@@ -68,7 +69,7 @@ baseline is exactly what the native Metal runtime is here to replace.
 | TRELLIS.2 1024 cascade | **Verified Torch/MPS oracle** | Default 12 steps, 15.28 GB maximum RSS, reloadable 272.8 MB GLB |
 | Full PBR image-to-3D | **In progress** | Native UV and synthetic bake pass; full model artifact still needs final end-to-end proof |
 | Existing-mesh texturing | **In progress** | CPU voxelizer, UV policy, staged reference CLI, and PBR baker exist; full native model path remains |
-| Swift + Metal full model | **In progress** | Both complete 30-block SLat flows and native samplers pass; full DINO, sparse structure, decoders, mesh extraction, and native PBR assembly remain |
+| Swift + Metal full model | **In progress** | Complete DINO and both 30-block SLat flows pass; native image preprocessing, sparse structure, decoders, mesh extraction, and PBR assembly remain |
 
 That distinction matters. A kernel can be verified while a pipeline is still
 unfinished. We do not promote the larger claim just because a nearby test is

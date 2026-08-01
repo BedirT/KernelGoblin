@@ -1,0 +1,304 @@
+{
+  "format": "KernelGoblin TRELLIS.2 complete DINOv3 F32 oracle v1",
+  "upstream_repository": "https://github.com/microsoft/TRELLIS.2",
+  "upstream_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "upstream_source": "trellis2/modules/image_feature_extractor.py",
+  "dino_repository": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+  "dino_revision": "ea8dc2863c51be0a264bab82070e3e8836b02d51",
+  "dino_config_sha256": "135ecd23e34a70b6fbed8b083fdecb319b7e3a54e3d849258bbe4ddcf1783bb5",
+  "checkpoint_sha256": "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179",
+  "checkpoint_bytes": 1212559808,
+  "transformers_version": "5.3.0",
+  "transformers_dino_source_sha256": "f1e8fdfe586f6919e229b72b9538a088af500a67c65901c88ca85ca7956dc0bd",
+  "attention_implementation": "eager",
+  "image_layout": "NCHW",
+  "image_size": 32,
+  "patch_size": 16,
+  "prefix_tokens": 5,
+  "token_count": 9,
+  "hidden_size": 1024,
+  "layers": 24,
+  "heads": 16,
+  "head_dimension": 64,
+  "mlp_hidden_size": 4096,
+  "layer_norm_epsilon": 1e-05,
+  "rope_theta": 100.0,
+  "final_norm": "parameter-free torch.nn.functional.layer_norm",
+  "output_file": "dino-stage-tiny.f32",
+  "output_sha256": "fb924d7aa23c1340325f05de116ee8788dc2e5ca164997ab2acc089aad8c1462",
+  "trace_file": "dino-stage-tiny.f32.trace",
+  "trace_sha256": "bbeb6807e7bf276ee9828ae651e0d9e063ce008a7582fe34ddbbfce1df07c72b",
+  "trace_stages": [
+    {
+      "name": "normalized_pixels",
+      "shape": [
+        1,
+        3,
+        32,
+        32
+      ],
+      "float_offset": 0,
+      "float_count": 3072
+    },
+    {
+      "name": "embeddings",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 3072,
+      "float_count": 9216
+    },
+    {
+      "name": "block_0",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 12288,
+      "float_count": 9216
+    },
+    {
+      "name": "block_1",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 21504,
+      "float_count": 9216
+    },
+    {
+      "name": "block_2",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 30720,
+      "float_count": 9216
+    },
+    {
+      "name": "block_3",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 39936,
+      "float_count": 9216
+    },
+    {
+      "name": "block_4",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 49152,
+      "float_count": 9216
+    },
+    {
+      "name": "block_5",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 58368,
+      "float_count": 9216
+    },
+    {
+      "name": "block_6",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 67584,
+      "float_count": 9216
+    },
+    {
+      "name": "block_7",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 76800,
+      "float_count": 9216
+    },
+    {
+      "name": "block_8",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 86016,
+      "float_count": 9216
+    },
+    {
+      "name": "block_9",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 95232,
+      "float_count": 9216
+    },
+    {
+      "name": "block_10",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 104448,
+      "float_count": 9216
+    },
+    {
+      "name": "block_11",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 113664,
+      "float_count": 9216
+    },
+    {
+      "name": "block_12",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 122880,
+      "float_count": 9216
+    },
+    {
+      "name": "block_13",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 132096,
+      "float_count": 9216
+    },
+    {
+      "name": "block_14",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 141312,
+      "float_count": 9216
+    },
+    {
+      "name": "block_15",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 150528,
+      "float_count": 9216
+    },
+    {
+      "name": "block_16",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 159744,
+      "float_count": 9216
+    },
+    {
+      "name": "block_17",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 168960,
+      "float_count": 9216
+    },
+    {
+      "name": "block_18",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 178176,
+      "float_count": 9216
+    },
+    {
+      "name": "block_19",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 187392,
+      "float_count": 9216
+    },
+    {
+      "name": "block_20",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 196608,
+      "float_count": 9216
+    },
+    {
+      "name": "block_21",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 205824,
+      "float_count": 9216
+    },
+    {
+      "name": "block_22",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 215040,
+      "float_count": 9216
+    },
+    {
+      "name": "block_23",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 224256,
+      "float_count": 9216
+    },
+    {
+      "name": "final_parameter_free_layer_norm",
+      "shape": [
+        1,
+        9,
+        1024
+      ],
+      "float_offset": 233472,
+      "float_count": 9216
+    }
+  ]
+}

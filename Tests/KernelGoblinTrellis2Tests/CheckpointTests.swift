@@ -795,6 +795,215 @@ struct CheckpointTests {
     }
 
     @Test(
+        "complete real DINOv3 conditioning stage matches the pinned TRELLIS oracle",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["KG_TRELLIS2_DINO_CHECKPOINT"] != nil,
+            "Set KG_TRELLIS2_DINO_CHECKPOINT to execute real DINOv3 conformance"
+        )
+    )
+    func realDINOv3StageGolden() throws {
+        let path = try #require(
+            ProcessInfo.processInfo.environment["KG_TRELLIS2_DINO_CHECKPOINT"]
+        )
+        let context = try MetalContext(arenaCapacity: 64 * 1024 * 1024)
+        let checkpoint = try MappedCheckpoint(
+            url: URL(fileURLWithPath: path), device: context.device
+        )
+        try #require(
+            checkpoint.sha256() ==
+                "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179"
+        )
+        let traceURL = try #require(Bundle.module.url(
+            forResource: "dino-stage-tiny", withExtension: "f32.trace",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: traceURL) ==
+                "bbeb6807e7bf276ee9828ae651e0d9e063ce008a7582fe34ddbbfce1df07c72b"
+        )
+        let oracle = try Data(contentsOf: traceURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        let imageElements = 3 * 32 * 32
+        let stageElements = 9 * 1024
+        try #require(oracle.count == imageElements + 26 * stageElements)
+        var imageValues = Array(oracle[0..<imageElements])
+        let image = try #require(context.device.makeBuffer(
+            bytes: &imageValues, length: imageValues.count * 4,
+            options: .storageModeShared
+        ))
+        var traces: [(String, [Float])] = []
+        let result = try DINOv3Conditioner(context: context).encodeNormalizedImageF32(
+            image: image, imageHeight: 32, imageWidth: 32,
+            checkpoint: checkpoint,
+            trace: { name, values in traces.append((name, values)) }
+        )
+        #expect(result.tokenCount == 9)
+        #expect(result.hiddenSize == 1024)
+        try #require(traces.count == 26)
+        let expectedNames = ["embeddings"]
+            + (0..<24).map { "block_\($0)" }
+            + ["final_parameter_free_layer_norm"]
+        for traceIndex in traces.indices {
+            let (name, values) = traces[traceIndex]
+            #expect(name == expectedNames[traceIndex])
+            try #require(values.count == stageElements)
+            let expectedStart = imageElements + traceIndex * stageElements
+            var maximumError: Float = 0
+            var squaredError: Double = 0
+            var expectedSquaredMagnitude: Double = 0
+            var mixedToleranceFailures = 0
+            var maximumMixedRatio: Float = 0
+            var maximumMixedExpected: Float = 0
+            var maximumMixedError: Float = 0
+            let absoluteTolerance: Float
+            if traceIndex == 0 {
+                absoluteTolerance = 1e-5
+            } else if traceIndex == traces.count - 1 {
+                absoluteTolerance = 1e-4
+            } else {
+                // Each residual block adds another sequence of F32 reductions.
+                // Bound accumulated low-magnitude drift per executed block.
+                absoluteTolerance = Float(traceIndex) * 2e-5
+            }
+            let relativeTolerance: Float = traceIndex == traces.count - 1
+                ? 1e-4 : 8e-6
+            for index in values.indices {
+                try #require(values[index].isFinite)
+                let expected = oracle[expectedStart + index]
+                let error = abs(values[index] - expected)
+                maximumError = max(maximumError, error)
+                squaredError += Double(error * error)
+                expectedSquaredMagnitude += Double(expected * expected)
+                let allowed = absoluteTolerance + relativeTolerance * abs(expected)
+                let mixedRatio = error / allowed
+                if mixedRatio > maximumMixedRatio {
+                    maximumMixedRatio = mixedRatio
+                    maximumMixedExpected = expected
+                    maximumMixedError = error
+                }
+                if error > allowed { mixedToleranceFailures += 1 }
+            }
+            let rms = sqrt(squaredError / Double(values.count))
+            let expectedRMS = sqrt(expectedSquaredMagnitude / Double(values.count))
+            let normalizedRMS = rms / max(expectedRMS, 1e-12)
+            print(
+                "DINO trace \(name): max=\(maximumError) rms=\(rms) " +
+                "normalized_rms=\(normalizedRMS) mixed_ratio=\(maximumMixedRatio) " +
+                "mixed_expected=\(maximumMixedExpected) mixed_error=\(maximumMixedError)"
+            )
+            // The mixed bound prevents large oracle outliers from diluting
+            // ordinary-token errors while allowing F32 reduction drift to
+            // scale with the magnitude of the value being compared.
+            #expect(mixedToleranceFailures == 0)
+            #expect(maximumMixedRatio <= 1)
+        }
+        let outputFixture = try #require(Bundle.module.url(
+            forResource: "dino-stage-tiny", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: outputFixture) ==
+                "fb924d7aa23c1340325f05de116ee8788dc2e5ca164997ab2acc089aad8c1462"
+        )
+        let expectedOutput = try Data(contentsOf: outputFixture).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        let actual = result.conditioning.contents().assumingMemoryBound(to: Float.self)
+        try #require(expectedOutput.count == stageElements)
+        for index in expectedOutput.indices {
+            #expect(abs(actual[index] - expectedOutput[index]) <= 1e-4)
+        }
+        let memory = try #require(context.arena).snapshot()
+        print(
+            "DINO arena: peak=\(memory.peakUsedBytes) " +
+            "live=\(memory.usedBytes) allocations=\(memory.allocationCount)"
+        )
+        #expect(memory.peakUsedBytes < memory.capacityBytes)
+    }
+
+    @Test(
+        "production-token DINOv3 512 conditioning matches the pinned TRELLIS oracle",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["KG_TRELLIS2_DINO_CHECKPOINT"] != nil,
+            "Set KG_TRELLIS2_DINO_CHECKPOINT to execute production DINOv3 conformance"
+        )
+    )
+    func realDINOv3Stage512Golden() throws {
+        let path = try #require(
+            ProcessInfo.processInfo.environment["KG_TRELLIS2_DINO_CHECKPOINT"]
+        )
+        let context = try MetalContext(arenaCapacity: 256 * 1024 * 1024)
+        let checkpoint = try MappedCheckpoint(
+            url: URL(fileURLWithPath: path), device: context.device
+        )
+        try #require(
+            checkpoint.sha256() ==
+                "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179"
+        )
+        let inputFixture = try #require(Bundle.module.url(
+            forResource: "dino-stage-512", withExtension: "f32.trace",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: inputFixture) ==
+                "b4b82db5b357a16c7b832876a8e0ac6a4f3adfe1e312235b944ffc90e995e4c6"
+        )
+        var imageValues = try Data(contentsOf: inputFixture).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        try #require(imageValues.count == 3 * 512 * 512)
+        let image = try #require(context.device.makeBuffer(
+            bytes: &imageValues, length: imageValues.count * 4,
+            options: .storageModeShared
+        ))
+        let started = ContinuousClock.now
+        let result = try DINOv3Conditioner(context: context).encodeNormalizedImageF32(
+            image: image, imageHeight: 512, imageWidth: 512,
+            checkpoint: checkpoint
+        )
+        let elapsed = started.duration(to: .now)
+        #expect(result.tokenCount == 1029)
+        #expect(result.hiddenSize == 1024)
+
+        let outputFixture = try #require(Bundle.module.url(
+            forResource: "dino-stage-512", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: outputFixture) ==
+                "e701080d00baff4f526e2615812c8f0a9d24e13e964c1920a1fcdac90538c7ad"
+        )
+        let expected = try Data(contentsOf: outputFixture).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        try #require(expected.count == 1029 * 1024)
+        let actual = result.conditioning.contents().assumingMemoryBound(to: Float.self)
+        var maximumError: Float = 0
+        var squaredError: Double = 0
+        var expectedSquaredMagnitude: Double = 0
+        for index in expected.indices {
+            try #require(actual[index].isFinite)
+            let error = abs(actual[index] - expected[index])
+            maximumError = max(maximumError, error)
+            squaredError += Double(error * error)
+            expectedSquaredMagnitude += Double(expected[index] * expected[index])
+        }
+        let rms = sqrt(squaredError / Double(expected.count))
+        let expectedRMS = sqrt(expectedSquaredMagnitude / Double(expected.count))
+        let normalizedRMS = rms / expectedRMS
+        let memory = try #require(context.arena).snapshot()
+        print(
+            "DINO 512: max=\(maximumError) rms=\(rms) " +
+            "normalized_rms=\(normalizedRMS) elapsed=\(elapsed) " +
+            "arena_peak=\(memory.peakUsedBytes) arena_live=\(memory.usedBytes)"
+        )
+        #expect(maximumError <= 1e-4)
+        #expect(normalizedRMS <= 5e-6)
+        #expect(memory.peakUsedBytes < memory.capacityBytes)
+    }
+
+    @Test(
         "native shape sampler drives the complete real TRELLIS.2 flow",
         .enabled(
             if: ProcessInfo.processInfo.environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"] != nil,
