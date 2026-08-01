@@ -1,0 +1,38 @@
+{
+  "format": "KernelGoblin TRELLIS.2 30-block shape SLat flow F32 oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "weight_revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+  "weight_sha256": "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f",
+  "batch_count": 1,
+  "tokens": 2,
+  "context_tokens": 2,
+  "input_channels": 32,
+  "model_channels": 1536,
+  "output_channels": 32,
+  "blocks": 30,
+  "use_rope": true,
+  "timestep": 650.25,
+  "input_formula": "f32(sin(i * 0.021) * 0.30)",
+  "context_formula": "f32(sin(i * 0.015) * 0.25)",
+  "coordinates": [
+    [
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      2,
+      3
+    ]
+  ],
+  "output_bytes": 256,
+  "output_sha256": "7f519fae4186b4bdd043ca91eea50eff3600246733bd433a378ad36a9d3659ce",
+  "trace_file": "slat-shape-flow-tiny.f32.trace",
+  "trace_dtype": "BF16",
+  "trace_elements_per_block": 3072,
+  "trace_sha256": "55c77fa8a47e2d31fcff75dfa5968cb52d7ecfb830c0d520136aeee0f26e3d94",
+  "oracle": "pinned Torch CPU SLatFlowModel"
+}

@@ -182,6 +182,47 @@ kernel void kg_multihead_rms_norm_f32(
   }
 }
 
+struct RoPE3DParams {
+  uint tokens;
+  uint heads;
+  uint dimensions;
+  uint frequency_dimensions;
+  float minimum_frequency;
+  float maximum_frequency;
+};
+
+kernel void kg_rope3d_f32(
+    const device float* input [[buffer(0)]],
+    const device int* coordinates [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant RoPE3DParams& params [[buffer(3)]],
+    uint index [[thread_position_in_grid]]) {
+  const uint count = params.tokens * params.heads * params.dimensions;
+  if (index >= count) return;
+  const uint dimension = index % params.dimensions;
+  const uint pair = dimension / 2;
+  const uint spatial_pairs = 3 * params.frequency_dimensions;
+  if (pair >= spatial_pairs) {
+    output[index] = input[index];
+    return;
+  }
+  const uint token = index / (params.heads * params.dimensions);
+  const uint axis = pair / params.frequency_dimensions;
+  const uint frequency_index = pair % params.frequency_dimensions;
+  const float frequency = params.minimum_frequency / pow(
+      params.maximum_frequency,
+      float(frequency_index) / float(params.frequency_dimensions));
+  const float angle = float(coordinates[token * 4 + axis + 1]) * frequency;
+  const float cosine = cos(angle);
+  const float sine = sin(angle);
+  const uint pair_base = index - dimension + pair * 2;
+  const float real = input[pair_base];
+  const float imaginary = input[pair_base + 1];
+  output[index] = (dimension & 1u) == 0u
+      ? fma(-imaginary, sine, real * cosine)
+      : fma(real, sine, imaginary * cosine);
+}
+
 struct AttentionParams {
   uint query_count;
   uint key_count;

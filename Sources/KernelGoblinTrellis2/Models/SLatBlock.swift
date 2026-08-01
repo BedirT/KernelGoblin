@@ -22,21 +22,23 @@ public final class SLatBlock: @unchecked Sendable {
     public func forwardF32(
         input: MTLBuffer, sharedModulation: MTLBuffer, conditioning: MTLBuffer,
         checkpoint: MappedCheckpoint, block: Int, tokens: Int,
-        conditioningTokens: Int
+        conditioningTokens: Int, coordinates: MTLBuffer
     ) throws -> MTLBuffer {
         // This vertical slice accepts exactly one sparse sequence. A future
         // stage API will carry batch segment offsets explicitly.
         try forwardF32(
             input: input, sharedModulation: sharedModulation, conditioning: conditioning,
             checkpoint: checkpoint, block: block, tokens: tokens,
-            conditioningTokens: conditioningTokens, trace: nil
+            conditioningTokens: conditioningTokens, coordinates: coordinates,
+            trace: nil
         )
     }
 
     func forwardF32(
         input: MTLBuffer, sharedModulation: MTLBuffer, conditioning: MTLBuffer,
         checkpoint: MappedCheckpoint, block: Int, tokens: Int,
-        conditioningTokens: Int, trace: ((String, MTLBuffer) -> Void)?
+        conditioningTokens: Int, coordinates: MTLBuffer,
+        trace: ((String, MTLBuffer) -> Void)?
     ) throws -> MTLBuffer {
         let tensorBytes = try blockBytes(tokens, Self.channels)
         let tensorElements = tensorBytes / 4
@@ -78,7 +80,8 @@ public final class SLatBlock: @unchecked Sendable {
         try primitives.roundBF16F32(input: selfInput, count: tensorElements, output: selfInput)
         trace?("self_input", selfInput)
         let selfOutput = try selfAttention.forwardF32(
-            input: selfInput, checkpoint: checkpoint, block: block, tokens: tokens
+            input: selfInput, checkpoint: checkpoint, block: block, tokens: tokens,
+            coordinates: coordinates
         )
         trace?("self_output", selfOutput)
         let afterSelf = try makeBuffer(length: tensorBytes, label: "SLat self residual")

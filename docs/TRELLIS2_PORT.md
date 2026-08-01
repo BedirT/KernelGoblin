@@ -45,12 +45,13 @@ the checkpoint.
 | DINO q projection | Verified native slice | Hash-authenticated 1.21 GB checkpoint, F32 Metal/CPU differential |
 | TRELLIS shape input layer | Verified native slice | Hash-authenticated 2.58 GB checkpoint, BF16 weight decode, 26,112 outputs, zero BF16 bit mismatches |
 | TRELLIS timestep + shared adaLN | Verified native slice | Real Metal sinusoid, SiLU MLP, 9,216-channel modulation, zero BF16 bit mismatches |
-| TRELLIS block 0 core | Verified native slice | Two-token no-RoPE normalization, fused self/cross attention, 8,192-channel MLP, adaLN, and residual graph; `0.01475` RMS against pinned Torch BF16 fixture |
+| TRELLIS block 0 | Verified native slice | Two-token 3D RoPE, normalization, fused self/cross attention, 8,192-channel MLP, adaLN, and residual graph; `0.01747` RMS against pinned Torch BF16 fixture |
+| TRELLIS shape flow | Verified native stage | Complete real input/timestep/adaLN/30-block/output graph; two-token F32 output has `0.00615` RMS error against pinned Torch |
 | Morton coding | Verified native Metal | Bit-exact differential and randomized round trips |
 | UV raster | Verified analytic Metal slice | Physical render, analytic coverage/interpolation; nvdiffrast CUDA goldens pending |
 | PBR bake | Experimental reference | Synthetic component tests and GLB reload; upstream mesh semantics pending |
 | Existing-mesh texturing | In progress | Staged reference orchestration exists; complete artifact proof pending |
-| Full Swift + Metal model | In progress | Conditioning, fused attention, and one real block core pass; required RoPE and complete stages remain |
+| Full Swift + Metal model | In progress | Conditioning, 3D RoPE, fused attention, and the complete shape-flow stage pass; other model stages remain |
 
 ## What The Reference Run Does
 
@@ -185,14 +186,12 @@ against pinned upstream outputs.
 
 ## Next Acceptance Gates
 
-1. Add 3D RoPE to the verified native cross-transformer block.
-2. Carry the block through one complete 30-block shape-flow stage with bounded
-   activation ownership.
-3. Implement sparse tensor topology, convolution, S2C/C2S, and decoder caches.
-4. Complete native DINO, sampler, VAE stages, and six-channel PBR decoding.
-5. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.
-6. Run existing-mesh texturing end to end with preserved and regenerated UVs.
-7. Profile only after parity, then optimize the measured bottlenecks.
+1. Add segmented sparse attention and representative-token memory gates.
+2. Implement sparse tensor topology, convolution, S2C/C2S, and decoder caches.
+3. Complete native DINO, sampler, VAE stages, and six-channel PBR decoding.
+4. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.
+5. Run existing-mesh texturing end to end with preserved and regenerated UVs.
+6. Profile only after parity, then optimize the measured bottlenecks.
 
 For the production package and memory contracts, continue with
 [`NATIVE_TRELLIS2_ARCHITECTURE.md`](NATIVE_TRELLIS2_ARCHITECTURE.md).

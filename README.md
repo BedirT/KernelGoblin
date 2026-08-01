@@ -50,14 +50,15 @@ baseline is exactly what the native Metal runtime is here to replace.
 | Real DINOv3 dense projection | **Verified native Metal slice** | `layer.0.attention.q_proj` from the pinned checkpoint, max absolute error `4.77e-7` against a CPU oracle |
 | Real TRELLIS shape-flow projection | **Verified native Metal slice** | Pinned 2.58 GB checkpoint, BF16 `[1536,32]` input layer, 17 rows, zero BF16 bit mismatches |
 | TRELLIS timestep + shared adaLN | **Verified native Metal slice** | Real sinusoid, two-layer SiLU MLP, and 9,216-channel modulation; zero BF16 bit mismatches |
-| TRELLIS cross-transformer core | **Verified native Metal slice** | Real block 0 normalization, two-token self-attention, cross-attention, 8,192-channel MLP, adaLN, and residuals match a pinned no-RoPE Torch BF16 fixture with `0.01475` RMS error; required 3D RoPE is next |
+| TRELLIS cross-transformer block | **Verified native Metal slice** | Real block 0 normalization, 3D RoPE, two-token self-attention, cross-attention, 8,192-channel MLP, adaLN, and residuals match a pinned Torch BF16 fixture with `0.01747` RMS error |
+| TRELLIS 30-block shape flow | **Verified native Metal stage** | Every production weight and block executes from the pinned 2.58 GB checkpoint; two-token final output matches the Torch oracle with `0.00615` RMS error |
 | CPU mesh to flexible dual grid | **Verified reference extension** | Pinned O-Voxel algorithm through LibTorch, AppleClang portability patch, tetrahedron fixtures; native Swift bridge remains |
 | Sparse PBR sampling and glTF packing | **Verified reference component** | Bounded sampling, xatlas seams, RGBA and metallic-roughness packing, GLB reload; native assembly remains |
 | TRELLIS.2 512 image-to-3D | **Verified Torch/MPS oracle** | Default 12 steps, reloadable 61 MB GLB |
 | TRELLIS.2 1024 cascade | **Verified Torch/MPS oracle** | Default 12 steps, 15.28 GB maximum RSS, reloadable 272.8 MB GLB |
 | Full PBR image-to-3D | **In progress** | Native UV and synthetic bake pass; full model artifact still needs final end-to-end proof |
 | Existing-mesh texturing | **In progress** | CPU voxelizer, UV policy, staged reference CLI, and PBR baker exist; full native model path remains |
-| Swift + Metal full model | **In progress** | Checkpoint mapping, conditioning, fused attention, and the no-RoPE core of one real block pass; RoPE and complete stages remain |
+| Swift + Metal full model | **In progress** | Checkpoint mapping, conditioning, 3D RoPE, fused attention, and the complete 30-block shape-flow stage pass; the other model stages remain |
 
 That distinction matters. A kernel can be verified while a pipeline is still
 unfinished. We do not promote the larger claim just because a nearby test is
@@ -195,20 +196,26 @@ KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT=/path/to/slat_flow_img2shape_dit_1_3B_512_bf16
   swift test --filter realSLatBlockGolden
 ```
 
-On the M3 Pro this runs the no-RoPE core of one real block, including LayerNorm32,
+On the M3 Pro this runs one complete real block, including LayerNorm32, 3D RoPE,
 self-attention, cross-attention, the 8,192-channel feed-forward network, adaLN,
 and residuals. CPU Torch and Metal use different reduction trees, so the test
 uses a BF16 differential bound rather than pretending bit identity is
 meaningful across different reduction trees. The two-token fixture exercises
 real Q/K scoring; every output is finite, maximum absolute error is `0.25`,
-and aggregate RMS error is `0.01475` over 3,072 values.
-The production model also requires 3D RoPE, which remains the next acceptance
-gate rather than being smuggled into this claim.
+and aggregate RMS error is `0.01747` over 3,072 values.
 
 This block API currently represents one sparse sequence. It deliberately does
 not accept concatenated batches until segment offsets are carried into fused
 attention; treating two samples as one token list would allow them to
 cross-attend and would be incorrect.
+
+The standard `./kg model native-test trellis2` command also carries that block
+through the complete 30-block shape-flow stage with every real production
+weight. Its deliberately tiny
+two-token input keeps the acceptance test quick while still covering the whole
+stage graph. Final output maximum error is `0.01557` and RMS error is `0.00615`
+over 64 F32 values. This proves stage conformance, not representative sparse-token
+memory use or generation speed; those are separate gates.
 
 On the development M3 Pro, the current UV raster benchmark reports:
 
@@ -287,8 +294,8 @@ for the newest native kernel boundary.
 ### Now
 
 - Finish the reusable Swift tensor runtime and page-aligned stage installer.
-- Add RoPE and carry the verified dense cross-transformer block through the
-  complete 30-block shape-flow stage.
+- Add segmented sparse attention and exercise the verified shape-flow stage at
+  representative token counts under a hard memory budget.
 - Complete the native DINOv3, TRELLIS flow, decoder, sampler, and PBR stages.
 
 ### Next

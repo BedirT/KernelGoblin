@@ -9,6 +9,7 @@ public final class SLatSelfAttention: @unchecked Sendable {
     private let dense: DenseKernel
     private let primitives: PrimitiveKernel
     private let normalization: NormalizationKernel
+    private let rotaryPosition: RotaryPositionKernel
     private let attention: AttentionKernel
 
     public init(context: MetalContext) throws {
@@ -16,6 +17,7 @@ public final class SLatSelfAttention: @unchecked Sendable {
         self.dense = try DenseKernel(context: context)
         self.primitives = try PrimitiveKernel(context: context)
         self.normalization = try NormalizationKernel(context: context)
+        self.rotaryPosition = try RotaryPositionKernel(context: context)
         self.attention = try AttentionKernel(context: context)
     }
 
@@ -23,10 +25,14 @@ public final class SLatSelfAttention: @unchecked Sendable {
         input: MTLBuffer,
         checkpoint: MappedCheckpoint,
         block: Int,
-        tokens: Int
+        tokens: Int,
+        coordinates: MTLBuffer?
     ) throws -> MTLBuffer {
         // `tokens` is one sparse sample. Segmented multi-sample attention is a
         // separate contract and must not concatenate batches into this call.
+        if let coordinates {
+            try requireSingleSequence(coordinates: coordinates, tokens: tokens)
+        }
         guard block >= 0, tokens > 0 else {
             throw NativeRuntimeError.invalidArgument("block and token count must be nonnegative")
         }
@@ -71,9 +77,34 @@ public final class SLatSelfAttention: @unchecked Sendable {
         try primitives.roundBF16F32(
             input: normalizedKey, count: tensorElements, output: normalizedKey
         )
+        let attentionQuery: MTLBuffer
+        let attentionKey: MTLBuffer
+        if let coordinates {
+            let rotatedQuery = try makeBuffer(length: tensorBytes, label: "SLat rotated query")
+            let rotatedKey = try makeBuffer(length: tensorBytes, label: "SLat rotated key")
+            try rotaryPosition.apply3DF32(
+                input: normalizedQuery, coordinates: coordinates, tokens: tokens,
+                heads: Self.heads, dimensions: Self.headDimensions, output: rotatedQuery
+            )
+            try rotaryPosition.apply3DF32(
+                input: normalizedKey, coordinates: coordinates, tokens: tokens,
+                heads: Self.heads, dimensions: Self.headDimensions, output: rotatedKey
+            )
+            try primitives.roundBF16F32(
+                input: rotatedQuery, count: tensorElements, output: rotatedQuery
+            )
+            try primitives.roundBF16F32(
+                input: rotatedKey, count: tensorElements, output: rotatedKey
+            )
+            attentionQuery = rotatedQuery
+            attentionKey = rotatedKey
+        } else {
+            attentionQuery = normalizedQuery
+            attentionKey = normalizedKey
+        }
         let attended = try makeBuffer(length: tensorBytes, label: "SLat attended values")
         try attention.fusedF32(
-            queries: normalizedQuery, keys: normalizedKey, values: value,
+            queries: attentionQuery, keys: attentionKey, values: value,
             queryCount: tokens, keyCount: tokens, heads: Self.heads,
             dimensions: Self.headDimensions, output: attended
         )
@@ -91,6 +122,27 @@ public final class SLatSelfAttention: @unchecked Sendable {
             input: output, count: tensorElements, output: output
         )
         return output
+    }
+
+    private func requireSingleSequence(coordinates: MTLBuffer, tokens: Int) throws {
+        let elements = tokens.multipliedReportingOverflow(by: 4)
+        let bytes = elements.partialValue.multipliedReportingOverflow(
+            by: MemoryLayout<Int32>.stride
+        )
+        guard tokens > 0, !elements.overflow, !bytes.overflow,
+              coordinates.length >= bytes.partialValue,
+              coordinates.storageMode != .private else {
+            throw NativeRuntimeError.invalidArgument(
+                "SLat coordinates must be CPU-readable [tokens,4] data"
+            )
+        }
+        let values = coordinates.contents().assumingMemoryBound(to: Int32.self)
+        let batch = values[0]
+        for token in 1..<tokens where values[token * 4] != batch {
+            throw NativeRuntimeError.invalidArgument(
+                "SLat attention accepts one sparse sequence; use segmented attention for batches"
+            )
+        }
     }
 
     private func projectAndSplit(

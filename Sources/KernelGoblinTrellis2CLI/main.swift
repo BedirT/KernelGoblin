@@ -319,7 +319,8 @@ enum KernelGoblinTrellis2Command {
         }
         let input = try makeBuffer(context, values: &inputValues)
         let actualBuffer = try SLatSelfAttention(context: context).forwardF32(
-            input: input, checkpoint: checkpoint, block: 0, tokens: tokens
+            input: input, checkpoint: checkpoint, block: 0, tokens: tokens,
+            coordinates: nil
         )
 
         let mapped = checkpoint.buffer.contents()

@@ -9,14 +9,14 @@
   "context_tokens": 2,
   "channels": 1536,
   "context_channels": 1024,
-  "use_rope": false,
+  "use_rope": true,
   "input_formula": "bf16(sin(i * 0.013) * 0.35)",
   "modulation_formula": "bf16(sin(i * 0.007) * 0.2)",
   "context_formula": "bf16(sin(i * 0.015) * 0.25)",
   "output_bytes": 6144,
-  "output_sha256": "6c33a91ee7588407ef84926d42cf5181127126e72640b1fc71d0e4ae68dbb857",
+  "output_sha256": "8cc519f7df166b5722f822ce231f1396a8f857d299074804677cba18547bb80d",
   "trace_file": "slat-block0-tiny.bf16.trace",
-  "trace_sha256": "6316473db08d5cd5aac341685b5e6066cd4a6c79d4841c915a810a40fafdc2ef",
+  "trace_sha256": "ab8c01605829d930f73d79aaf16d5f524aec788e701d7809b5c86f052194c17b",
   "trace_offsets": {
     "norm1": [
       0,

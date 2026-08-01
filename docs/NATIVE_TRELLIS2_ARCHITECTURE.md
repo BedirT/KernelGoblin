@@ -134,19 +134,23 @@ BF16-stored MLP projections with SiLU, and the shared adaLN projection to 9,216
 channels. At timestep `650.25`, maximum F32 error was `4.77e-6` and every
 round-to-nearest-even BF16 output bit matched the CPU oracle.
 
-The third slice executes the no-RoPE core of one production-weight
-cross-transformer block: LayerNorm32, adaptive modulation, fused self-attention, affine
+The third slice executes one complete production-weight cross-transformer
+block: LayerNorm32, adaptive modulation, 3D RoPE, fused self-attention, affine
 normalization, fused cross-attention, the 1,536 -> 8,192 -> 1,536 GELU MLP, and
 both gated residuals. Its fixture comes from the pinned upstream Torch CPU
 implementation. The two-token fixture exercises real self-attention scoring.
 On Apple M3 Pro, every final value was finite, maximum absolute error was
-`0.25`, and RMS error was `0.0147469` over 3,072 outputs. Intermediate fixtures
+`0.25`, and RMS error was `0.0174691` over 3,072 outputs. Intermediate fixtures
 cover every sub-block boundary so a later regression cannot be hidden by the
 final tolerance.
 
-These are real model operations and a complete block core, not a complete model
-stage. The next acceptance boundary is required 3D RoPE followed by the full 30-block
-shape-flow stage with bounded activation ownership.
+The fourth slice carries that block through the complete production shape-flow
+stage. It maps the pinned 2.58 GB checkpoint and executes the real input layer,
+timestep MLP, shared adaLN, all 30 RoPE cross-transformer blocks, final
+LayerNorm, and output layer on Metal. Against the pinned two-token Torch oracle,
+final maximum error is `0.01557` and RMS error is `0.00615` over 64 F32 values.
+The tiny fixture covers every stage weight and operation, but it does not stand
+in for representative sparse-token memory or performance evidence.
 
 The current block contract is batch one. Before native stage execution accepts
 multiple sparse samples in one call, the tensor layout must carry explicit

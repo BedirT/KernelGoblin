@@ -449,8 +449,212 @@ struct CheckpointTests {
         }
     }
 
+    @Test("Metal 3D RoPE matches the pinned TRELLIS coordinate formula")
+    func rotaryPosition3D() throws {
+        let context = try MetalContext()
+        let kernel = try RotaryPositionKernel(context: context)
+        let tokens = 2, heads = 2, dimensions = 128
+        var values = (0..<(tokens * heads * dimensions)).map {
+            Float(sin(Double($0) * 0.019) * 0.8)
+        }
+        var coordinates: [Int32] = [0, 0, 0, 0, 0, 1, 2, 3]
+        let input = try #require(context.device.makeBuffer(
+            bytes: &values, length: values.count * 4, options: .storageModeShared
+        ))
+        let coordinateBuffer = try #require(context.device.makeBuffer(
+            bytes: &coordinates, length: coordinates.count * 4, options: .storageModeShared
+        ))
+        let output = try #require(context.device.makeBuffer(
+            length: values.count * 4, options: .storageModeShared
+        ))
+        #expect(throws: NativeRuntimeError.self) {
+            try kernel.apply3DF32(
+                input: input, coordinates: coordinateBuffer, tokens: tokens,
+                heads: heads, dimensions: dimensions, output: input
+            )
+        }
+        try kernel.apply3DF32(
+            input: input, coordinates: coordinateBuffer, tokens: tokens,
+            heads: heads, dimensions: dimensions, output: output
+        )
+        let actual = output.contents().assumingMemoryBound(to: Float.self)
+        let frequencyDimensions = dimensions / 2 / 3
+        for token in 0..<tokens {
+            for head in 0..<heads {
+                let headBase = (token * heads + head) * dimensions
+                for pair in 0..<(dimensions / 2) {
+                    let real = values[headBase + pair * 2]
+                    let imaginary = values[headBase + pair * 2 + 1]
+                    let expectedReal: Float
+                    let expectedImaginary: Float
+                    if pair < frequencyDimensions * 3 {
+                        let axis = pair / frequencyDimensions
+                        let frequencyIndex = pair % frequencyDimensions
+                        let frequency = 1 / pow(
+                            10_000, Float(frequencyIndex) / Float(frequencyDimensions)
+                        )
+                        let angle = Float(coordinates[token * 4 + axis + 1]) * frequency
+                        expectedReal = real * cos(angle) - imaginary * sin(angle)
+                        expectedImaginary = real * sin(angle) + imaginary * cos(angle)
+                    } else {
+                        expectedReal = real
+                        expectedImaginary = imaginary
+                    }
+                    #expect(abs(actual[headBase + pair * 2] - expectedReal) < 2e-6)
+                    #expect(abs(actual[headBase + pair * 2 + 1] - expectedImaginary) < 2e-6)
+                }
+            }
+        }
+    }
+
     @Test(
-        "real TRELLIS.2 no-RoPE block core matches the pinned Torch BF16 oracle",
+        "complete real TRELLIS.2 shape flow matches the pinned Torch oracle",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"] != nil,
+            "Set KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT to execute real-weight conformance"
+        )
+    )
+    func realSLatShapeFlowGolden() throws {
+        let path = try #require(
+            ProcessInfo.processInfo.environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"]
+        )
+        let context = try MetalContext()
+        let checkpoint = try MappedCheckpoint(
+            url: URL(fileURLWithPath: path), device: context.device
+        )
+        try #require(
+            checkpoint.sha256() ==
+                "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f"
+        )
+        let tokens = 2
+        var features = (0..<(tokens * 32)).map {
+            Float(sin(Double($0) * 0.021) * 0.30)
+        }
+        var timestep: [Float] = [650.25]
+        var conditioning = (0..<(2 * 1024)).map {
+            Float(sin(Double($0) * 0.015) * 0.25)
+        }
+        var coordinates: [Int32] = [0, 0, 0, 0, 0, 1, 2, 3]
+        let inputBuffer = try #require(context.device.makeBuffer(
+            bytes: &features, length: features.count * 4, options: .storageModeShared
+        ))
+        let timestepBuffer = try #require(context.device.makeBuffer(
+            bytes: &timestep, length: timestep.count * 4, options: .storageModeShared
+        ))
+        let conditioningBuffer = try #require(context.device.makeBuffer(
+            bytes: &conditioning, length: conditioning.count * 4, options: .storageModeShared
+        ))
+        let coordinateBuffer = try #require(context.device.makeBuffer(
+            bytes: &coordinates, length: coordinates.count * 4, options: .storageModeShared
+        ))
+        var mixedBatchCoordinates: [Int32] = [0, 0, 0, 0, 1, 1, 2, 3]
+        let mixedBatchBuffer = try #require(context.device.makeBuffer(
+            bytes: &mixedBatchCoordinates, length: mixedBatchCoordinates.count * 4,
+            options: .storageModeShared
+        ))
+        let flow = try SLatShapeFlow(context: context)
+        #expect(throws: NativeRuntimeError.self) {
+            try flow.forwardF32(
+                input: inputBuffer, timestep: timestepBuffer,
+                conditioning: conditioningBuffer, coordinates: mixedBatchBuffer,
+                checkpoint: checkpoint, tokens: tokens, conditioningTokens: 2
+            )
+        }
+        var blockOutputs: [MTLBuffer] = []
+        let output = try flow.forwardF32(
+            input: inputBuffer, timestep: timestepBuffer,
+            conditioning: conditioningBuffer, coordinates: coordinateBuffer,
+            checkpoint: checkpoint, tokens: tokens, conditioningTokens: 2,
+            trace: { index, buffer in
+                #expect(index == blockOutputs.count)
+                blockOutputs.append(buffer)
+            }
+        )
+
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "slat-shape-flow-tiny", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: fixtureURL) ==
+                "7f519fae4186b4bdd043ca91eea50eff3600246733bd433a378ad36a9d3659ce"
+        )
+        let golden = try Data(contentsOf: fixtureURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        try #require(golden.count == tokens * 32)
+        let actual = output.contents().assumingMemoryBound(to: Float.self)
+        var maximumAbsoluteError: Float = 0
+        var squaredError: Double = 0
+        for index in golden.indices {
+            try #require(actual[index].isFinite)
+            let error = abs(actual[index] - golden[index])
+            maximumAbsoluteError = max(maximumAbsoluteError, error)
+            squaredError += Double(error * error)
+        }
+        let rmsError = sqrt(squaredError / Double(golden.count))
+
+        let traceURL = try #require(Bundle.module.url(
+            forResource: "slat-shape-flow-tiny", withExtension: "f32.trace",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: traceURL) ==
+                "55c77fa8a47e2d31fcff75dfa5968cb52d7ecfb830c0d520136aeee0f26e3d94"
+        )
+        let trace = try Data(contentsOf: traceURL).withUnsafeBytes {
+            Array($0.bindMemory(to: UInt16.self))
+        }
+        let elementsPerBlock = tokens * 1536
+        try #require(blockOutputs.count == SLatShapeFlow.blockCount)
+        try #require(trace.count == blockOutputs.count * elementsPerBlock)
+        var worstBlockRMS: Double = 0
+        var worstBlockNormalizedRMS: Double = 0
+        var worstBlockMaximumScaleRatio: Float = 0
+        var worstBlockMaximum: Float = 0
+        for blockIndex in blockOutputs.indices {
+            let values = blockOutputs[blockIndex].contents().assumingMemoryBound(to: Float.self)
+            var blockSquaredError: Double = 0
+            var expectedSquaredMagnitude: Double = 0
+            var expectedMaximum: Float = 0
+            var blockMaximum: Float = 0
+            for index in 0..<elementsPerBlock {
+                try #require(values[index].isFinite)
+                let expected = fromBF16(UInt16(littleEndian: trace[blockIndex * elementsPerBlock + index]))
+                let error = abs(values[index] - expected)
+                blockMaximum = max(blockMaximum, error)
+                expectedMaximum = max(expectedMaximum, abs(expected))
+                blockSquaredError += Double(error * error)
+                expectedSquaredMagnitude += Double(expected * expected)
+            }
+            worstBlockMaximum = max(worstBlockMaximum, blockMaximum)
+            try #require(expectedMaximum > 0)
+            worstBlockMaximumScaleRatio = max(
+                worstBlockMaximumScaleRatio, blockMaximum / expectedMaximum
+            )
+            let blockRMS = sqrt(blockSquaredError / Double(elementsPerBlock))
+            let expectedRMS = sqrt(expectedSquaredMagnitude / Double(elementsPerBlock))
+            worstBlockRMS = max(worstBlockRMS, blockRMS)
+            worstBlockNormalizedRMS = max(
+                worstBlockNormalizedRMS, blockRMS / max(expectedRMS, 1e-12)
+            )
+        }
+        print(
+            "30-block shape flow: max=\(maximumAbsoluteError) rms=\(rmsError) " +
+            "block_max=\(worstBlockMaximum) block_rms=\(worstBlockRMS) " +
+            "block_normalized_rms=\(worstBlockNormalizedRMS) " +
+            "block_max_scale_ratio=\(worstBlockMaximumScaleRatio)"
+        )
+        #expect(maximumAbsoluteError <= 0.025)
+        #expect(rmsError <= 0.01)
+        #expect(worstBlockMaximum <= 64)
+        #expect(worstBlockRMS <= 1)
+        #expect(worstBlockNormalizedRMS <= 0.015)
+        #expect(worstBlockMaximumScaleRatio <= 0.03)
+    }
+
+    @Test(
+        "real TRELLIS.2 RoPE block matches the pinned Torch BF16 oracle",
         .enabled(
             if: ProcessInfo.processInfo.environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"] != nil,
             "Set KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT to execute real-weight conformance"
@@ -485,17 +689,23 @@ struct CheckpointTests {
         let contextBuffer = try #require(context.device.makeBuffer(
             bytes: &contextValues, length: contextValues.count * 4, options: .storageModeShared
         ))
+        var coordinateValues: [Int32] = [0, 0, 0, 0, 0, 1, 2, 3]
+        let coordinateBuffer = try #require(context.device.makeBuffer(
+            bytes: &coordinateValues, length: coordinateValues.count * 4,
+            options: .storageModeShared
+        ))
         var tracedBuffers: [String: MTLBuffer] = [:]
         let actualBuffer = try SLatBlock(context: context).forwardF32(
             input: featureBuffer, sharedModulation: modulationBuffer,
             conditioning: contextBuffer, checkpoint: checkpoint,
-            block: 0, tokens: tokens, conditioningTokens: 2, trace: { name, buffer in
+            block: 0, tokens: tokens, conditioningTokens: 2,
+            coordinates: coordinateBuffer, trace: { name, buffer in
             tracedBuffers[name] = buffer
         })
         let fixtureURL = try #require(Bundle.module.url(
             forResource: "slat-block0-tiny", withExtension: "bf16", subdirectory: "Fixtures"
         ))
-        try #require(fileSHA256(at: fixtureURL) == "6c33a91ee7588407ef84926d42cf5181127126e72640b1fc71d0e4ae68dbb857")
+        try #require(fileSHA256(at: fixtureURL) == "8cc519f7df166b5722f822ce231f1396a8f857d299074804677cba18547bb80d")
         let golden = try Data(contentsOf: fixtureURL).withUnsafeBytes { raw in
             Array(raw.bindMemory(to: UInt16.self))
         }
@@ -528,7 +738,7 @@ struct CheckpointTests {
             forResource: "slat-block0-tiny", withExtension: "bf16.trace",
             subdirectory: "Fixtures"
         ))
-        try #require(fileSHA256(at: traceURL) == "6316473db08d5cd5aac341685b5e6066cd4a6c79d4841c915a810a40fafdc2ef")
+        try #require(fileSHA256(at: traceURL) == "ab8c01605829d930f73d79aaf16d5f524aec788e701d7809b5c86f052194c17b")
         let trace = try Data(contentsOf: traceURL).withUnsafeBytes { raw in
             Array(raw.bindMemory(to: UInt16.self))
         }

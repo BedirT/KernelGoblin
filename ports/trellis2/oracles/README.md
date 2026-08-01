@@ -5,7 +5,8 @@ capturing immutable behavior from the pinned upstream Torch implementation so
 the Swift + Metal port can be tested without importing Torch.
 
 `export_slat_block_fixture.py` loads only block 0 from the authenticated
-`shape_slat_flow_model_512` checkpoint, runs one deterministic BF16 token, and
+`shape_slat_flow_model_512` checkpoint, runs two deterministic BF16 tokens with
+the production 3D RoPE path, and
 writes:
 
 - the final 1,536-channel BF16 output;
@@ -27,3 +28,16 @@ Do not commit the checkpoint or extracted weights. The tiny activation fixture
 is derived from `microsoft/TRELLIS.2-4B` at revision
 `af44b45f2e35a493886929c6d786e563ec68364d`, whose weights are MIT licensed.
 
+The complete stage oracle uses the same deterministic two-token contract while
+executing all 30 production blocks:
+
+```sh
+build/trellis2/.venv/bin/python \
+  ports/trellis2/oracles/export_slat_shape_flow_fixture.py \
+  --checkpoint /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors \
+  --output build/trellis2/slat-shape-flow-tiny.f32
+```
+
+This fixture covers every shape-flow weight and operation. Its deliberately
+small token count makes it a conformance test, not a representative memory or
+performance workload.

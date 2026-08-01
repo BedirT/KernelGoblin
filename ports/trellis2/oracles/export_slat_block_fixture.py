@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import math
+import subprocess
 import sys
 from functools import partial
 from pathlib import Path
@@ -46,11 +47,22 @@ def deterministic(count: int, multiplier: float, scale: float, trig=math.sin) ->
     ).to(torch.bfloat16)
 
 
+def require_pinned_source() -> None:
+    revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=UPSTREAM, text=True
+    ).strip()
+    if revision != SOURCE_REVISION:
+        raise SystemExit(f"upstream checkout is {revision}, expected {SOURCE_REVISION}")
+    if subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], cwd=UPSTREAM).returncode != 0:
+        raise SystemExit("upstream checkout has tracked modifications")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    require_pinned_source()
     if sha256(args.checkpoint) != WEIGHT_SHA256:
         raise SystemExit("checkpoint SHA-256 does not match the pinned 512 shape-flow file")
 
@@ -61,7 +73,7 @@ def main() -> None:
 
     block = ModulatedSparseTransformerCrossBlock(
         1536, 1024, num_heads=12, mlp_ratio=5.3334, attn_mode="full",
-        share_mod=True, qk_rms_norm=True, qk_rms_norm_cross=True,
+        share_mod=True, qk_rms_norm=True, qk_rms_norm_cross=True, use_rope=True,
     ).eval()
     block.apply(partial(convert_module_to, dtype=torch.bfloat16))
     state = {}
@@ -134,7 +146,7 @@ def main() -> None:
         "context_tokens": context_tokens,
         "channels": 1536,
         "context_channels": 1024,
-        "use_rope": False,
+        "use_rope": True,
         "input_formula": "bf16(sin(i * 0.013) * 0.35)",
         "modulation_formula": "bf16(sin(i * 0.007) * 0.2)",
         "context_formula": "bf16(sin(i * 0.015) * 0.25)",
