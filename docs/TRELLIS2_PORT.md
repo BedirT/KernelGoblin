@@ -13,10 +13,10 @@ shape encoding/decoding, flexible-dual-grid geometry, UV preparation,
 six-channel PBR decoding, Metal texture baking, Telea inpainting, and GLB
 writing/reload validation.
 
-The default 12-step **existing-mesh texturing** workflow is end-to-end verified
-on a physical Apple M3 Pro. The default-step **image-to-3D** artifact gate is in
-progress. Therefore the machine-readable full-model status remains
-`in-progress`; implementation coverage is not promoted into an artifact claim.
+The default 12-step **existing-mesh texturing** and **512 image-to-PBR**
+workflows are end-to-end verified on a physical Apple M3 Pro. Both artifacts
+reload natively and through Assimp. The machine-readable full-model status is
+`verified-native-512`; 1024 and cascade modes remain oracle-only.
 
 The shipping boundary is:
 
@@ -137,10 +137,10 @@ fixtures.
 | 512 image-to-3D oracle | Torch/MPS end-to-end | Default 12 steps, reloadable 61 MB GLB |
 | 1024 cascade oracle | Torch/MPS end-to-end | Historical default-step observation: reloadable 272.8 MB GLB, 15.28 GB maximum RSS, zero swaps; not a current benchmark record |
 
-The complete native conformance command passed 93 tests in 13 suites before the
-mesh-to-encoder test was added. The new handoff test then passed independently
-under Metal API validation. The final report will replace this split record with
-one current full-suite count.
+The final native conformance command passed 99 tests in 15 suites under Metal
+API validation. It included the production 12-step sparse trajectory, every
+real-checkpoint stage, the mesh-to-encoder handoff, and physical Metal kernel
+tests, executed serially to avoid cross-test GPU-memory contention.
 
 ## Native Existing-Mesh Artifact Record
 
@@ -292,14 +292,13 @@ fixture before comparing it.
 
 ## Remaining Acceptance Gates
 
-1. Complete, reload, and record the default 12-step native 512 image-to-PBR GLB.
-2. Render native artifacts from multiple views and compare silhouette,
+1. Render more native artifacts and compare silhouette,
    topology, texture, and material behavior with the pinned oracle.
-3. Add representative model-derived PBR bake benchmarks before publishing bake
+2. Add representative model-derived PBR bake benchmarks before publishing bake
    performance as anything beyond an analytic microbenchmark.
-4. Improve UV chart quality toward the pinned CuMesh behavior without relaxing
+3. Improve UV chart quality toward the pinned CuMesh behavior without relaxing
    the exact face-preservation gate.
-5. Profile the accepted end-to-end graph, then optimize the production sparse
+4. Profile the accepted end-to-end graph, then optimize the production sparse
    kernels that dominate wall time.
 
 The durable architecture and installer rationale live in

@@ -1,7 +1,7 @@
 # TRELLIS.2 Native Image-To-PBR Generation Evidence
 
 This is the immutable human-readable record for the first accepted default-step
-native 512 image-to-PBR artifact. The 361 MB GLB and model weights remain
+native 512 image-to-PBR artifact. The 361 MiB GLB and model weights remain
 ignored; their hashes identify the exact accepted input and output.
 
 ## Runtime

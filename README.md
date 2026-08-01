@@ -95,11 +95,12 @@ full-model claim.
 | End-to-end verified | Default settings, real checkpoints, physical backend, artifact reload | Native 512 image-to-PBR, native existing-mesh texturing; Torch/MPS 512 and 1024-cascade oracles |
 | Production-stage verified | Complete real stage and checkpoint execute with authenticated comparisons | DINOv3, both 30-block flows, sparse structure flow/decoder, shape encoder |
 | Analytic or tiny-fixture verified | Real backend and exact contract, deliberately small workload | Shape and guided texture decoders, Morton coding, UV raster, sparse attention, O-Voxel mesh extraction, PBR bake and GLB packing |
-| Implemented, acceptance pending | Full call path exists but its final artifact gate is not complete | Native 1024/cascade modes are not implemented; those remain oracle-only |
+| Outside the current native scope | Available only through an explicitly named reference path | Native 1024/cascade modes remain oracle-only |
 
 Some useful numbers from the physical M3 Pro verification:
 
-- 93 real-checkpoint and component tests passed under Metal API validation.
+- 99 tests in 15 suites passed under Metal API validation, including complete
+  real-checkpoint stages and the production sparse trajectory.
 - The full 12-step sparse-structure trajectory executed all 22 model calls;
   teacher-forced probes stayed below `0.01376` normalized RMS.
 - Free-running BF16 feedback reached `0.7208` occupancy IoU with the captured
