@@ -324,3 +324,8 @@ fixture before comparing it.
 
 The durable architecture and installer rationale live in
 [`NATIVE_TRELLIS2_ARCHITECTURE.md`](NATIVE_TRELLIS2_ARCHITECTURE.md).
+
+On macOS 15 and newer, the large attention path preserves the upstream BF16
+model boundary inside MPSGraph rather than silently widening SDPA to F32. See
+[`trellis2-mpsgraph-bf16-attention-m3pro-2026-08-01.md`](evidence/trellis2-mpsgraph-bf16-attention-m3pro-2026-08-01.md)
+for exact-shape and real-checkpoint evidence.

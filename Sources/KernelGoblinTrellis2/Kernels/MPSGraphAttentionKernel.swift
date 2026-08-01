@@ -31,14 +31,17 @@ final class MPSGraphAttentionKernel: @unchecked Sendable {
             let value = graph.placeholder(
                 shape: keyShape, dataType: .float32, name: "value_nhd"
             )
+            let queryBF16 = graph.cast(query, to: .bFloat16, name: "query_bf16")
+            let keyBF16 = graph.cast(key, to: .bFloat16, name: "key_bf16")
+            let valueBF16 = graph.cast(value, to: .bFloat16, name: "value_bf16")
             let queryBHQD = graph.transpose(
-                query, permutation: [0, 2, 1, 3], name: "query_bhqd"
+                queryBF16, permutation: [0, 2, 1, 3], name: "query_bhqd"
             )
             let keyBHKD = graph.transpose(
-                key, permutation: [0, 2, 1, 3], name: "key_bhkd"
+                keyBF16, permutation: [0, 2, 1, 3], name: "key_bhkd"
             )
             let valueBHKD = graph.transpose(
-                value, permutation: [0, 2, 1, 3], name: "value_bhkd"
+                valueBF16, permutation: [0, 2, 1, 3], name: "value_bhkd"
             )
             let attended = graph.scaledDotProductAttention(
                 query: queryBHQD,
@@ -51,9 +54,10 @@ final class MPSGraphAttentionKernel: @unchecked Sendable {
             self.query = query
             self.key = key
             self.value = value
-            self.output = graph.transpose(
-                attended, permutation: [0, 2, 1, 3], name: "output_nhd"
+            let outputBF16 = graph.transpose(
+                attended, permutation: [0, 2, 1, 3], name: "output_nhd_bf16"
             )
+            self.output = graph.cast(outputBF16, to: .float32, name: "output_nhd")
         }
     }
 

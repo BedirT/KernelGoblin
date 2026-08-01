@@ -107,12 +107,16 @@ enum AttentionBenchmark {
         guard normalizedRMS <= 0.005 else {
             throw BenchmarkError.conformanceFailed(workload.name, normalizedRMS)
         }
-        let sampledMaximumError = sampledCPUError(
+        let sampledCPU = sampledCPUError(
             workload: workload, queries: queries, keys: keys, values: values,
             metal: metal, mps: mps
         )
-        guard sampledMaximumError <= 2e-5 else {
-            throw BenchmarkError.cpuReferenceFailed(workload.name, sampledMaximumError)
+        guard sampledCPU.maximumMetalAbsolute <= 2e-5,
+              sampledCPU.maximumMPSAbsolute <= 4e-5 else {
+            throw BenchmarkError.cpuReferenceFailed(
+                workload.name, sampledCPU.maximumMetalAbsolute,
+                sampledCPU.maximumMPSAbsolute
+            )
         }
 
         for _ in 0..<warmup {
@@ -136,7 +140,9 @@ enum AttentionBenchmark {
         print(
             "workload=\(workload.name) b=1 h=\(workload.heads) q=\(workload.queryCount) " +
             "k=\(workload.keyCount) d=\(workload.dimensions) max_abs_diff=\(maximumError) " +
-            "normalized_rms=\(normalizedRMS) sampled_cpu_max_abs_diff=\(sampledMaximumError)"
+            "normalized_rms=\(normalizedRMS) " +
+            "sampled_cpu_metal_max_abs_diff=\(sampledCPU.maximumMetalAbsolute) " +
+            "sampled_cpu_mps_max_abs_diff=\(sampledCPU.maximumMPSAbsolute)"
         )
         print(summary(name: "metal", values: metalTimes))
         print(summary(name: "mpsgraph", values: mpsTimes))
@@ -150,8 +156,9 @@ enum AttentionBenchmark {
         values: [Float],
         metal: UnsafePointer<Float>,
         mps: UnsafePointer<Float>
-    ) -> Float {
-        var maximumError: Float = 0
+    ) -> (maximumMetalAbsolute: Float, maximumMPSAbsolute: Float) {
+        var maximumMetalAbsolute: Float = 0
+        var maximumMPSAbsolute: Float = 0
         let sampledQueries = [0, workload.queryCount / 2, workload.queryCount - 1]
         let sampledHeads = [0, workload.heads / 2, workload.heads - 1]
         let sampledDimensions = [0, workload.dimensions / 2, workload.dimensions - 1]
@@ -180,13 +187,16 @@ enum AttentionBenchmark {
                             * values[keyBase + dimension]
                     }
                     let index = queryBase + dimension
-                    maximumError = max(
-                        maximumError, abs(metal[index] - expected), abs(mps[index] - expected)
+                    maximumMetalAbsolute = max(
+                        maximumMetalAbsolute, abs(metal[index] - expected)
+                    )
+                    maximumMPSAbsolute = max(
+                        maximumMPSAbsolute, abs(mps[index] - expected)
                     )
                 }
             }
         }
-        return maximumError
+        return (maximumMetalAbsolute, maximumMPSAbsolute)
     }
 
     private static func fixtureValues(
@@ -228,5 +238,5 @@ private enum BenchmarkError: Error {
     case invalidArguments
     case allocationFailed
     case conformanceFailed(String, Double)
-    case cpuReferenceFailed(String, Float)
+    case cpuReferenceFailed(String, Float, Float)
 }
