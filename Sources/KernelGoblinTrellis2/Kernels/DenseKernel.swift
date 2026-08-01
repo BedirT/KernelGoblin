@@ -5,6 +5,7 @@ public enum BF16LinearImplementation: Sendable {
     case tiled
     case simdgroupMatrix
     case mpsGraph
+    case mpsGraphModelPrecision
 }
 
 public final class DenseKernel: @unchecked Sendable {
@@ -127,7 +128,8 @@ public final class DenseKernel: @unchecked Sendable {
         let operationCount = rowInputCount.partialValue.multipliedReportingOverflow(
             by: outputChannels
         )
-        let useMPSGraph = supportsMPSGraph && (implementation == .mpsGraph
+        let useMPSGraph = supportsMPSGraph && ((implementation == .mpsGraph
+            || implementation == .mpsGraphModelPrecision)
             || (implementation == .automatic
                 && !operationCount.overflow
                 && !rowInputCount.overflow
@@ -143,14 +145,15 @@ public final class DenseKernel: @unchecked Sendable {
                     rows: rows,
                     inputChannels: inputChannels,
                     outputChannels: outputChannels,
-                    output: output
+                    output: output,
+                    modelPrecision: implementation != .mpsGraph
                 )
             }
             return
         }
-        if implementation == .mpsGraph {
+        if implementation == .mpsGraph || implementation == .mpsGraphModelPrecision {
             throw NativeRuntimeError.invalidArgument(
-                "MPSGraph BF16 dense requires macOS 15.2 or newer"
+                "MPSGraph dense requires macOS 15.2 or newer"
             )
         }
         let selectedPipeline: MTLComputePipelineState
@@ -177,7 +180,7 @@ public final class DenseKernel: @unchecked Sendable {
             }
             selectedPipeline = linearBF16SIMDGroupPipeline
             usesSIMDGroupMatrix = true
-        case .mpsGraph:
+        case .mpsGraph, .mpsGraphModelPrecision:
             fatalError("MPSGraph dispatch returned before Metal pipeline selection")
         }
         try linear(

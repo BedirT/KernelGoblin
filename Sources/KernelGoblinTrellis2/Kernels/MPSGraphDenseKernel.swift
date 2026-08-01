@@ -3,12 +3,18 @@ import Metal
 import MetalPerformanceShadersGraph
 
 final class MPSGraphDenseKernel: @unchecked Sendable {
+    private enum Precision: Hashable {
+        case float32
+        case modelBF16
+    }
+
     private struct Key: Hashable {
         let checkpointElements: Int
         let rows: Int
         let inputChannels: Int
         let outputChannels: Int
         let hasBias: Bool
+        let precision: Precision
     }
 
     @available(macOS 15.2, *)
@@ -51,12 +57,20 @@ final class MPSGraphDenseKernel: @unchecked Sendable {
                 shape: [key.outputChannels, key.inputChannels] as [NSNumber],
                 name: "weights"
             )
-            let weightsF32 = graph.cast(weights, to: .float32, name: "weights_f32")
+            let matrixInput: MPSGraphTensor
+            let matrixWeights: MPSGraphTensor
+            if key.precision == .modelBF16 {
+                matrixInput = graph.cast(input, to: .bFloat16, name: "input_bf16")
+                matrixWeights = weights
+            } else {
+                matrixInput = input
+                matrixWeights = graph.cast(weights, to: .float32, name: "weights_f32")
+            }
             let transposedWeights = graph.transpose(
-                weightsF32, permutation: [1, 0], name: "weights_transposed"
+                matrixWeights, permutation: [1, 0], name: "weights_transposed"
             )
             let product = graph.matrixMultiplication(
-                primary: input, secondary: transposedWeights, name: "matmul"
+                primary: matrixInput, secondary: transposedWeights, name: "matmul"
             )
             let biasStart: MPSGraphTensor?
             let output: MPSGraphTensor
@@ -77,7 +91,8 @@ final class MPSGraphDenseKernel: @unchecked Sendable {
                 biasStart = start
                 output = graph.addition(
                     product,
-                    graph.cast(bias, to: .float32, name: "bias_f32"),
+                    key.precision == .modelBF16
+                        ? bias : graph.cast(bias, to: .float32, name: "bias_f32"),
                     name: "bias_add"
                 )
             } else {
@@ -89,7 +104,8 @@ final class MPSGraphDenseKernel: @unchecked Sendable {
             self.checkpoint = checkpoint
             self.weightStart = weightStart
             self.biasStart = biasStart
-            self.output = output
+            self.output = key.precision == .modelBF16
+                ? graph.cast(output, to: .float32, name: "output_f32") : output
         }
     }
 
@@ -118,7 +134,8 @@ final class MPSGraphDenseKernel: @unchecked Sendable {
         rows: Int,
         inputChannels: Int,
         outputChannels: Int,
-        output: MTLBuffer
+        output: MTLBuffer,
+        modelPrecision: Bool
     ) throws {
         try autoreleasepool {
             try runScoped(
@@ -129,7 +146,8 @@ final class MPSGraphDenseKernel: @unchecked Sendable {
                 rows: rows,
                 inputChannels: inputChannels,
                 outputChannels: outputChannels,
-                output: output
+                output: output,
+                modelPrecision: modelPrecision
             )
         }
     }
@@ -143,14 +161,16 @@ final class MPSGraphDenseKernel: @unchecked Sendable {
         rows: Int,
         inputChannels: Int,
         outputChannels: Int,
-        output: MTLBuffer
+        output: MTLBuffer,
+        modelPrecision: Bool
     ) throws {
         let key = Key(
             checkpointElements: checkpoint.length / MemoryLayout<UInt16>.stride,
             rows: rows,
             inputChannels: inputChannels,
             outputChannels: outputChannels,
-            hasBias: biasOffset != nil
+            hasBias: biasOffset != nil,
+            precision: modelPrecision ? .modelBF16 : .float32
         )
         let plan = cachedPlan(for: key)
         var feeds: [MPSGraphTensor: MPSGraphTensorData] = [

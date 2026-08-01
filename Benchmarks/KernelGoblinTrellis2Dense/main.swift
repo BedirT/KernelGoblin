@@ -97,7 +97,7 @@ enum DenseBenchmark {
                 inputChannels: workload.inputChannels,
                 outputChannels: workload.outputChannels,
                 output: mpsOutput,
-                implementation: .mpsGraph
+                implementation: .mpsGraphModelPrecision
             )
         }
         try invoke(.tiled, tiledOutput)
@@ -127,7 +127,10 @@ enum DenseBenchmark {
         guard simdNormalizedRMS <= 5e-4 else {
             throw BenchmarkError.conformanceFailed(workload.name, "simdgroup", simdNormalizedRMS)
         }
-        guard mpsNormalizedRMS <= 5e-4 else {
+        // The production MPSGraph path executes the upstream BF16 matrix
+        // boundary, so validate it with dtype-derived aggregate and absolute
+        // gates rather than the F32 accumulation bound used by Metal oracles.
+        guard mpsNormalizedRMS <= 2e-3, mpsMaximumError <= 2e-3 else {
             throw BenchmarkError.conformanceFailed(workload.name, "mpsgraph", mpsNormalizedRMS)
         }
         for row in [0, workload.rows / 2, workload.rows - 1] {
@@ -146,8 +149,7 @@ enum DenseBenchmark {
                 let errorBound = gamma / (1 - gamma) * absoluteProducts + 2e-6
                 let index = row * workload.outputChannels + channel
                 guard abs(tiled[index] - expected) <= errorBound,
-                      abs(simd[index] - expected) <= errorBound,
-                      abs(mps[index] - expected) <= errorBound else {
+                      abs(simd[index] - expected) <= errorBound else {
                     throw BenchmarkError.cpuReferenceFailed(workload.name, row, channel)
                 }
             }
@@ -167,7 +169,7 @@ enum DenseBenchmark {
             let implementations: [(String, () throws -> Void)] = [
                 ("tiled", { try invoke(.tiled, tiledOutput) }),
                 ("simdgroup", { try invoke(.simdgroupMatrix, simdOutput) }),
-                ("mpsgraph", { try invokeMPSGraph() }),
+                ("mpsgraph_bf16", { try invokeMPSGraph() }),
             ]
             let offset = iteration % implementations.count
             let order = Array(implementations[offset...]) + Array(implementations[..<offset])
@@ -190,9 +192,9 @@ enum DenseBenchmark {
         )
         print(summary(name: "tiled", values: tiledTimes))
         print(summary(name: "simdgroup", values: simdTimes))
-        print(summary(name: "mpsgraph", values: mpsTimes))
+        print(summary(name: "mpsgraph_bf16", values: mpsTimes))
         print(String(
-            format: "simdgroup_speedup=%.3fx mpsgraph_speedup=%.3fx",
+            format: "simdgroup_speedup=%.3fx mpsgraph_bf16_speedup=%.3fx",
             median(tiledTimes) / median(simdTimes), median(tiledTimes) / median(mpsTimes)
         ))
     }

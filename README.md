@@ -141,9 +141,9 @@ CMake 3.25+, and Ninja.
 
 The runtime supports macOS 14. On macOS 15+, large 128-wide attention uses
 Apple's GPU-backed MPSGraph SDPA with BF16 model inputs and outputs; on macOS
-15.2+, large BF16 dense projections use MPSGraph as well. Small, segmented, or
-unavailable cases stay on our custom Metal kernels, where graph dispatch
-overhead would cost more than it saves.
+15.2+, large dense projections preserve the BF16 model boundary in MPSGraph as
+well. Small, segmented, or unavailable cases stay on our custom Metal kernels,
+where graph dispatch overhead would cost more than it saves.
 
 ```sh
 ./kg doctor
