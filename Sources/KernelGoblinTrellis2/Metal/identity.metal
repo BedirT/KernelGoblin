@@ -387,6 +387,40 @@ kernel void kg_layer_norm_f32(
   }
 }
 
+kernel void kg_layer_norm_simdgroup_f32(
+    const device float* input [[buffer(0)]],
+    const device uchar* checkpoint [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant LayerNormParams& params [[buffer(3)]],
+    uint row [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  if (row >= params.rows) return;
+  const uint base = row * params.channels;
+  float partial_sum = 0.0f;
+  for (uint channel = lane; channel < params.channels; channel += 32) {
+    partial_sum += input[base + channel];
+  }
+  const float mean = simd_sum(partial_sum) / float(params.channels);
+  float partial_variance = 0.0f;
+  for (uint channel = lane; channel < params.channels; channel += 32) {
+    const float centered = input[base + channel] - mean;
+    partial_variance = fma(centered, centered, partial_variance);
+  }
+  const float variance = simd_sum(partial_variance) / float(params.channels);
+  const float inverse_std = rsqrt(variance + params.epsilon);
+  const device ushort* weight =
+      reinterpret_cast<const device ushort*>(checkpoint + params.weight_offset);
+  const device ushort* bias =
+      reinterpret_cast<const device ushort*>(checkpoint + params.bias_offset);
+  for (uint channel = lane; channel < params.channels; channel += 32) {
+    float value = (input[base + channel] - mean) * inverse_std;
+    if (params.has_affine) {
+      value = fma(value, kg_bf16_to_f32(weight[channel]), kg_bf16_to_f32(bias[channel]));
+    }
+    output[base + channel] = value;
+  }
+}
+
 kernel void kg_layer_norm_f32_affine_f32(
     const device float* input [[buffer(0)]],
     const device uchar* checkpoint [[buffer(1)]],
@@ -476,6 +510,34 @@ kernel void kg_multihead_rms_norm_f32(
       reinterpret_cast<const device ushort*>(checkpoint + params.gamma_offset);
   const uint gamma_base = head * params.dimensions;
   for (uint dimension = 0; dimension < params.dimensions; ++dimension) {
+    output[base + dimension] = input[base + dimension] * inverse_norm *
+        kg_bf16_to_f32(gamma[gamma_base + dimension]) * scale;
+  }
+}
+
+kernel void kg_multihead_rms_norm_simdgroup_f32(
+    const device float* input [[buffer(0)]],
+    const device uchar* checkpoint [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant RMSNormParams& params [[buffer(3)]],
+    uint group [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint group_count = params.rows * params.heads;
+  if (group >= group_count) return;
+  const uint head = group % params.heads;
+  const uint base = group * params.dimensions;
+  float partial_squared_sum = 0.0f;
+  for (uint dimension = lane; dimension < params.dimensions; dimension += 32) {
+    partial_squared_sum = fma(
+        input[base + dimension], input[base + dimension], partial_squared_sum);
+  }
+  const float squared_sum = simd_sum(partial_squared_sum);
+  const float inverse_norm = 1.0f / max(sqrt(squared_sum), params.epsilon);
+  const float scale = sqrt(float(params.dimensions));
+  const device ushort* gamma =
+      reinterpret_cast<const device ushort*>(checkpoint + params.gamma_offset);
+  const uint gamma_base = head * params.dimensions;
+  for (uint dimension = lane; dimension < params.dimensions; dimension += 32) {
     output[base + dimension] = input[base + dimension] * inverse_norm *
         kg_bf16_to_f32(gamma[gamma_base + dimension]) * scale;
   }

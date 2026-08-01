@@ -1466,6 +1466,77 @@ struct CheckpointTests {
         }
     }
 
+    @Test("SIMD-group normalization matches scalar production widths")
+    func simdgroupNormalizationProductionWidths() throws {
+        let context = try MetalContext()
+        let kernel = try NormalizationKernel(context: context)
+        let rows = 4, channels = 1536, heads = 12, dimensions = 128
+        var inputValues = (0..<(rows * channels)).map {
+            Float(sin(Double($0) * 0.013) * 0.7 + cos(Double($0) * 0.007) * 0.2)
+        }
+        var checkpointValues = (0..<channels).map {
+            bf16(0.8 + Float($0 % 17) * 0.01)
+        }
+        checkpointValues += (0..<channels).map {
+            bf16(-0.05 + Float($0 % 11) * 0.005)
+        }
+        let gammaOffset = checkpointValues.count * MemoryLayout<UInt16>.stride
+        checkpointValues += (0..<(heads * dimensions)).map {
+            bf16(0.9 + Float($0 % 13) * 0.008)
+        }
+        let input = try #require(context.device.makeBuffer(
+            bytes: &inputValues,
+            length: inputValues.count * MemoryLayout<Float>.stride,
+            options: .storageModeShared
+        ))
+        let checkpoint = try #require(context.device.makeBuffer(
+            bytes: &checkpointValues,
+            length: checkpointValues.count * MemoryLayout<UInt16>.stride,
+            options: .storageModeShared
+        ))
+        let outputBytes = inputValues.count * MemoryLayout<Float>.stride
+        let scalar = try #require(context.device.makeBuffer(
+            length: outputBytes, options: .storageModeShared
+        ))
+        let simdgroup = try #require(context.device.makeBuffer(
+            length: outputBytes, options: .storageModeShared
+        ))
+
+        try kernel.layerNormF32(
+            input: input, checkpoint: checkpoint, rows: rows, channels: channels,
+            weightOffset: 0,
+            biasOffset: channels * MemoryLayout<UInt16>.stride,
+            output: scalar, implementation: .scalar
+        )
+        try kernel.layerNormF32(
+            input: input, checkpoint: checkpoint, rows: rows, channels: channels,
+            weightOffset: 0,
+            biasOffset: channels * MemoryLayout<UInt16>.stride,
+            output: simdgroup, implementation: .simdgroup
+        )
+        var scalarValues = scalar.contents().assumingMemoryBound(to: Float.self)
+        var simdValues = simdgroup.contents().assumingMemoryBound(to: Float.self)
+        for index in inputValues.indices {
+            #expect(abs(scalarValues[index] - simdValues[index]) <= 2e-5)
+        }
+
+        try kernel.multiheadRMSNormF32(
+            input: input, checkpoint: checkpoint, gammaOffset: gammaOffset,
+            rows: rows, heads: heads, dimensions: dimensions,
+            output: scalar, implementation: .scalar
+        )
+        try kernel.multiheadRMSNormF32(
+            input: input, checkpoint: checkpoint, gammaOffset: gammaOffset,
+            rows: rows, heads: heads, dimensions: dimensions,
+            output: simdgroup, implementation: .simdgroup
+        )
+        scalarValues = scalar.contents().assumingMemoryBound(to: Float.self)
+        simdValues = simdgroup.contents().assumingMemoryBound(to: Float.self)
+        for index in inputValues.indices {
+            #expect(abs(scalarValues[index] - simdValues[index]) <= 2e-5)
+        }
+    }
+
     @Test(
         "complete real DINOv3 conditioning stage matches the pinned TRELLIS oracle",
         .enabled(

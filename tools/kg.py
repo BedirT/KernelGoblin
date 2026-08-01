@@ -733,6 +733,14 @@ def command_model_native_attention_benchmark(args: argparse.Namespace) -> None:
     ])
 
 
+def command_model_native_normalization_benchmark(args: argparse.Namespace) -> None:
+    require_model(args.model)
+    run([
+        "swift", "run", "-c", "release", "kg-trellis2-normalization-bench",
+        "--warmup", str(args.warmup), "--iterations", str(args.iterations),
+    ])
+
+
 def print_native_benchmark_environment() -> None:
     for label, command in (
         ("swift", ["swift", "--version"]),
@@ -892,6 +900,7 @@ def parser() -> argparse.ArgumentParser:
         ("native-audit", "audit the release binary for a Swift/Metal-only runtime", command_model_native_audit),
         ("native-benchmark", "benchmark native Metal model primitives", command_model_native_benchmark),
         ("native-attention-benchmark", "benchmark native TRELLIS attention backends", command_model_native_attention_benchmark),
+        ("native-normalization-benchmark", "benchmark native TRELLIS normalization backends", command_model_native_normalization_benchmark),
         ("native-pbr-benchmark", "benchmark the synchronized native Metal PBR bake stage", command_model_native_pbr_benchmark),
         ("oracle-setup", "install the isolated Torch/MPS correctness oracle", command_model_oracle_setup),
         ("oracle-test", "run optional Torch/MPS oracle tests", command_model_oracle_test),
@@ -914,7 +923,10 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--texture-decoder-checkpoint")
             sub.add_argument("--shape-encoder-checkpoint")
             sub.add_argument("--dino-checkpoint")
-        if name in ("native-benchmark", "native-attention-benchmark"):
+        if name in (
+            "native-benchmark", "native-attention-benchmark",
+            "native-normalization-benchmark",
+        ):
             sub.add_argument("--warmup", type=int, default=5)
             sub.add_argument("--iterations", type=int, default=20)
         if name == "native-pbr-benchmark":

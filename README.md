@@ -219,6 +219,7 @@ Run the native verification ladder:
 ./kg model native-audit trellis2
 ./kg model native-benchmark trellis2
 ./kg model native-attention-benchmark trellis2
+./kg model native-normalization-benchmark trellis2
 ./kg model native-pbr-benchmark trellis2
 ```
 

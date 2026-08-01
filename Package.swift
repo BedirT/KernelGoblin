@@ -16,6 +16,10 @@ let package = Package(
             targets: ["KernelGoblinTrellis2AttentionBenchmark"]
         ),
         .executable(
+            name: "kg-trellis2-normalization-bench",
+            targets: ["KernelGoblinTrellis2NormalizationBenchmark"]
+        ),
+        .executable(
             name: "kg-trellis2-pbr-bake-bench",
             targets: ["KernelGoblinTrellis2PBRBenchmark"]
         ),
@@ -40,6 +44,11 @@ let package = Package(
             name: "KernelGoblinTrellis2AttentionBenchmark",
             dependencies: ["KernelGoblinTrellis2"],
             path: "Benchmarks/KernelGoblinTrellis2Attention"
+        ),
+        .executableTarget(
+            name: "KernelGoblinTrellis2NormalizationBenchmark",
+            dependencies: ["KernelGoblinTrellis2"],
+            path: "Benchmarks/KernelGoblinTrellis2Normalization"
         ),
         .executableTarget(
             name: "KernelGoblinTrellis2PBRBenchmark",
