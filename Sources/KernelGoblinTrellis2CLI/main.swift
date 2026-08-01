@@ -1,15 +1,52 @@
 import Foundation
 import KernelGoblinTrellis2
 import Metal
+import Darwin
 
 @main
 enum KernelGoblinTrellis2Command {
-    static func main() throws {
+    static func main() async {
+        do {
+            try await run()
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error)\n".utf8))
+            Darwin.exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func run() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.first == "install" {
+            try await install(arguments: Array(arguments.dropFirst()))
+            return
+        }
+        if arguments.first == "generate" {
+            try generate(arguments: Array(arguments.dropFirst()))
+            return
+        }
+        if arguments.first == "texture" {
+            try texture(arguments: Array(arguments.dropFirst()))
+            return
+        }
+        if arguments.first == "verify-glb" {
+            guard arguments.count == 2 else { throw Exit.invalidArguments }
+            let validation = try PBRGLBValidator.validate(
+                url: URL(fileURLWithPath: arguments[1])
+            )
+            print("PASS: reloaded GLB PBR artifact")
+            print("vertices=\(validation.vertexCount) indices=\(validation.indexCount)")
+            print("textures=\(validation.imageCount) size=\(validation.textureWidth)x\(validation.textureHeight)")
+            print("alpha_mode=\(validation.alphaMode) double_sided=\(validation.doubleSided)")
+            return
+        }
+        if arguments.isEmpty || arguments.first == "help" || arguments.first == "--help" {
+            printUsage()
+            return
+        }
         guard arguments.count == 2 else {
             FileHandle.standardError.write(
                 Data(
-                    "usage: kg-trellis2 <inspect-checkpoint|verify-dino-linear|verify-slat-input-layer|verify-slat-conditioning|verify-slat-self-attention|verify-slat-cross-attention> FILE.safetensors\n".utf8
+                    "Run `kg-trellis2 help` for usage.\n".utf8
                 )
             )
             throw Exit.invalidArguments
@@ -44,6 +81,224 @@ enum KernelGoblinTrellis2Command {
         for tensor in index.tensors.values.sorted(by: { $0.name < $1.name }).prefix(20) {
             print("\(tensor.name) dtype=\(tensor.dtype.rawValue) shape=\(tensor.shape) bytes=\(tensor.byteCount)")
         }
+    }
+
+    private static func install(arguments: [String]) async throws {
+        let options = try CLIOptions(arguments)
+        try options.requireOnly(["root", "feature"])
+        let root = options.value("root").map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        } ?? Trellis2NativeInstaller.defaultRoot
+        let feature: Trellis2InstallFeature
+        if let raw = options.value("feature") {
+            guard let parsed = Trellis2InstallFeature(rawValue: raw) else {
+                throw Exit.invalidArguments
+            }
+            feature = parsed
+        } else {
+            feature = .all
+        }
+        let receipt = try await Trellis2NativeInstaller.install512(
+            root: root, feature: feature,
+            progress: { message in print("[install] \(message)") }
+        )
+        print("PASS: installed \(receipt.components.count) authenticated native components")
+        print("root=\(root.path)")
+        print("runtime=\(receipt.runtime) torch=false python=false")
+    }
+
+    private static func generate(arguments: [String]) throws {
+        let options = try CLIOptions(arguments)
+        try options.requireOnly([
+            "input", "output", "seed", "steps", "texture-size",
+            "alpha-mode", "checkpoint-root", "evidence", "accept-opaque",
+            "require-alpha", "max-stage-memory-gib",
+        ])
+        let input = URL(fileURLWithPath: try options.required("input"))
+        var output = URL(fileURLWithPath: try options.required("output"))
+        if output.pathExtension.lowercased() != "glb" {
+            output.appendPathComponent("trellis2-512-pbr.glb")
+        }
+        let checkpoints: Trellis2CheckpointSet
+        if let root = options.value("checkpoint-root") {
+            checkpoints = try Trellis2NativeInstaller.checkpointSet(
+                root: URL(fileURLWithPath: root, isDirectory: true)
+            )
+        } else if let installed = try? Trellis2NativeInstaller.checkpointSet() {
+            checkpoints = installed
+        } else {
+            checkpoints = try Trellis2CheckpointSet.huggingFaceCache()
+        }
+        let seed = try options.uint64("seed", default: 42)
+        let steps = try options.integer("steps", default: 12, range: 1...100)
+        let textureSize = try options.integer(
+            "texture-size", default: 2048, range: 16...8192
+        )
+        let alphaMode = options.value("alpha-mode") ?? "OPAQUE"
+        guard ["OPAQUE", "BLEND", "MASK"].contains(alphaMode) else {
+            throw Exit.invalidArguments
+        }
+        var memory = Trellis2MemoryBudget()
+        if let value = options.value("max-stage-memory-gib") {
+            guard let gib = Int(value), (1...24).contains(gib) else {
+                throw Exit.invalidArguments
+            }
+            let bytes = gib * 1024 * 1024 * 1024
+            memory.shapeFlowBytes = bytes
+            memory.textureFlowBytes = bytes
+            memory.shapeDecoderBytes = bytes
+            memory.textureDecoderBytes = bytes
+        }
+        guard !(options.flag("accept-opaque") && options.flag("require-alpha")) else {
+            throw Exit.invalidArguments
+        }
+        let opaquePolicy: TrellisOpaqueImagePolicy = options.flag("accept-opaque")
+            ? .acceptWithoutBackgroundRemoval
+            : (options.flag("require-alpha")
+                ? .requireMeaningfulAlpha : .appleVisionForegroundMask)
+        let evidence = try NativeTrellis2Pipeline().generate512(
+            imageURL: input,
+            opaquePolicy: opaquePolicy,
+            checkpoints: checkpoints,
+            options: Trellis2GenerationOptions(
+                seed: seed, steps: steps, textureSize: textureSize,
+                alphaMode: alphaMode, memory: memory
+            ),
+            outputURL: output,
+            progress: reportProgress
+        )
+        let evidenceURL = options.value("evidence").map(URL.init(fileURLWithPath:))
+            ?? output.appendingPathExtension("evidence.json")
+        try FileManager.default.createDirectory(
+            at: evidenceURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(evidence).write(to: evidenceURL, options: .atomic)
+        print("PASS: native Swift + Metal TRELLIS.2 generation")
+        print("output=\(output.path)")
+        print("evidence=\(evidenceURL.path)")
+        print("sha256=\(evidence.outputSHA256)")
+        print("mesh_vertices=\(evidence.meshVertexCount) mesh_faces=\(evidence.meshFaceCount)")
+        print("output_vertices=\(evidence.outputVertexCount) output_faces=\(evidence.outputFaceCount)")
+        print("texture=\(evidence.textureSize)x\(evidence.textureSize) covered=\(evidence.coveredTexels)")
+    }
+
+    private static func texture(arguments: [String]) throws {
+        let options = try CLIOptions(arguments)
+        try options.requireOnly([
+            "mesh", "input", "output", "seed", "steps", "texture-size",
+            "uv-policy", "alpha-mode", "checkpoint-root", "evidence",
+            "accept-opaque", "require-alpha", "max-stage-memory-gib",
+        ])
+        let mesh = URL(fileURLWithPath: try options.required("mesh"))
+        let input = URL(fileURLWithPath: try options.required("input"))
+        var output = URL(fileURLWithPath: try options.required("output"))
+        if output.pathExtension.lowercased() != "glb" {
+            output.appendPathComponent("trellis2-textured-pbr.glb")
+        }
+        let checkpoints: Trellis2TexturingCheckpointSet
+        if let root = options.value("checkpoint-root") {
+            checkpoints = try Trellis2NativeInstaller.texturingCheckpointSet(
+                root: URL(fileURLWithPath: root, isDirectory: true)
+            )
+        } else if let installed = try? Trellis2NativeInstaller.texturingCheckpointSet() {
+            checkpoints = installed
+        } else {
+            checkpoints = try Trellis2TexturingCheckpointSet.huggingFaceCache()
+        }
+        let seed = try options.uint64("seed", default: 42)
+        let steps = try options.integer("steps", default: 12, range: 1...100)
+        let textureSize = try options.integer(
+            "texture-size", default: 2048, range: 16...8192
+        )
+        let uvPolicy: UVPreparationPolicy
+        switch options.value("uv-policy") ?? "preserve-or-generate" {
+        case "preserve": uvPolicy = .preserve
+        case "preserve-or-generate": uvPolicy = .preserveOrGenerate
+        case "regenerate": uvPolicy = .regenerate
+        default: throw Exit.invalidArguments
+        }
+        let alphaMode = options.value("alpha-mode") ?? "OPAQUE"
+        guard ["OPAQUE", "BLEND", "MASK"].contains(alphaMode),
+              !(options.flag("accept-opaque") && options.flag("require-alpha")) else {
+            throw Exit.invalidArguments
+        }
+        let opaquePolicy: TrellisOpaqueImagePolicy = options.flag("accept-opaque")
+            ? .acceptWithoutBackgroundRemoval
+            : (options.flag("require-alpha")
+                ? .requireMeaningfulAlpha : .appleVisionForegroundMask)
+        var memory = Trellis2MemoryBudget()
+        if let value = options.value("max-stage-memory-gib") {
+            guard let gib = Int(value), (1...24).contains(gib) else {
+                throw Exit.invalidArguments
+            }
+            let bytes = gib * 1024 * 1024 * 1024
+            memory.shapeEncoderBytes = bytes
+            memory.textureFlowBytes = bytes
+            memory.textureDecoderBytes = bytes
+        }
+        let evidence = try NativeTrellis2Pipeline().texture512(
+            meshURL: mesh, imageURL: input, opaquePolicy: opaquePolicy,
+            checkpoints: checkpoints,
+            options: Trellis2TexturingOptions(
+                seed: seed, steps: steps, textureSize: textureSize,
+                uvPolicy: uvPolicy, alphaMode: alphaMode, memory: memory
+            ),
+            outputURL: output,
+            progress: reportProgress
+        )
+        let evidenceURL = options.value("evidence").map(URL.init(fileURLWithPath:))
+            ?? output.appendingPathExtension("evidence.json")
+        try FileManager.default.createDirectory(
+            at: evidenceURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(evidence).write(to: evidenceURL, options: .atomic)
+        print("PASS: native Swift + Metal TRELLIS.2 existing-mesh texturing")
+        print("output=\(output.path)")
+        print("evidence=\(evidenceURL.path)")
+        print("sha256=\(evidence.outputSHA256)")
+        print("source_vertices=\(evidence.sourceVertexCount) source_faces=\(evidence.sourceFaceCount)")
+        print("output_vertices=\(evidence.outputVertexCount) output_faces=\(evidence.outputFaceCount)")
+        print("texture=\(evidence.textureSize)x\(evidence.textureSize) covered=\(evidence.coveredTexels)")
+    }
+
+    private static func printUsage() {
+        print("""
+        KernelGoblin TRELLIS.2 - native Swift + Metal
+
+        Usage:
+          kg-trellis2 install [--root DIR] [--feature generate|texture|all]
+          kg-trellis2 generate --input IMAGE --output FILE.glb [options]
+          kg-trellis2 texture --mesh MESH --input IMAGE --output FILE.glb [options]
+          kg-trellis2 verify-glb FILE.glb
+          kg-trellis2 inspect-checkpoint FILE.safetensors
+          kg-trellis2 verify-dino-linear FILE.safetensors
+          kg-trellis2 verify-slat-input-layer FILE.safetensors
+          kg-trellis2 verify-slat-conditioning FILE.safetensors
+          kg-trellis2 verify-slat-self-attention FILE.safetensors
+          kg-trellis2 verify-slat-cross-attention FILE.safetensors
+
+        Generate options:
+          --seed N                     Native deterministic seed (default: 42)
+          --steps N                    Euler steps for all flows (default: 12)
+          --texture-size N             Square PBR texture size (default: 2048)
+          --alpha-mode MODE            GLB material mode: OPAQUE, BLEND, or MASK
+          --checkpoint-root DIR         Native install root
+          --evidence FILE              Evidence JSON path
+          --max-stage-memory-gib N      Cap each large stage heap (default: 4-6 GiB)
+          --accept-opaque               Skip background removal for an isolated opaque image
+          --require-alpha               Reject opaque input instead of using Apple Vision
+
+        DINOv3 is gated. Accept its Hugging Face terms and set HF_TOKEN before install.
+        Torch and Python are not installed or used by these commands.
+        """)
+    }
+
+    private static func reportProgress(_ stage: String) {
+        FileHandle.standardOutput.write(Data("[native] \(stage)\n".utf8))
     }
 
     private static func verifyDinoLinear(url: URL) throws {
@@ -481,12 +736,90 @@ enum KernelGoblinTrellis2Command {
     }
 }
 
-enum Exit: Error {
+private struct CLIOptions {
+    private var values: [String: String] = [:]
+    private var flags: Set<String> = []
+
+    init(_ arguments: [String]) throws {
+        var index = 0
+        while index < arguments.count {
+            let argument = arguments[index]
+            guard argument.hasPrefix("--"), argument.count > 2 else {
+                throw Exit.invalidArguments
+            }
+            let name = String(argument.dropFirst(2))
+            guard values[name] == nil, !flags.contains(name) else {
+                throw Exit.invalidArguments
+            }
+            if name == "accept-opaque" || name == "require-alpha" {
+                flags.insert(name)
+                index += 1
+                continue
+            }
+            guard index + 1 < arguments.count,
+                  !arguments[index + 1].hasPrefix("--") else {
+                throw Exit.invalidArguments
+            }
+            values[name] = arguments[index + 1]
+            index += 2
+        }
+    }
+
+    func requireOnly(_ allowed: Set<String>) throws {
+        guard Set(values.keys).union(flags).isSubset(of: allowed) else {
+            throw Exit.invalidArguments
+        }
+    }
+
+    func required(_ name: String) throws -> String {
+        guard let value = values[name], !value.isEmpty else {
+            throw Exit.invalidArguments
+        }
+        return value
+    }
+
+    func value(_ name: String) -> String? { values[name] }
+
+    func flag(_ name: String) -> Bool { flags.contains(name) }
+
+    func integer(
+        _ name: String, default defaultValue: Int, range: ClosedRange<Int>
+    ) throws -> Int {
+        guard let raw = values[name] else { return defaultValue }
+        guard let value = Int(raw), range.contains(value) else {
+            throw Exit.invalidArguments
+        }
+        return value
+    }
+
+    func uint64(_ name: String, default defaultValue: UInt64) throws -> UInt64 {
+        guard let raw = values[name] else { return defaultValue }
+        guard let value = UInt64(raw) else { throw Exit.invalidArguments }
+        return value
+    }
+}
+
+enum Exit: Error, CustomStringConvertible {
     case checksumMismatch(expected: String, actual: String)
     case conformanceFailed(Float, Float)
     case incompatibleCheckpoint
     case invalidArguments
     case slatConformanceFailed(Float, Float, Int)
+
+    var description: String {
+        switch self {
+        case let .checksumMismatch(expected, actual):
+            "checkpoint SHA-256 mismatch: expected \(expected), found \(actual)"
+        case let .conformanceFailed(absolute, relative):
+            "conformance failed: max absolute error \(absolute), max relative error \(relative)"
+        case .incompatibleCheckpoint:
+            "checkpoint tensor layout is incompatible with the pinned TRELLIS.2 revision"
+        case .invalidArguments:
+            "invalid arguments; run `kg-trellis2 help` for usage"
+        case let .slatConformanceFailed(absolute, rms, mismatches):
+            "SLat conformance failed: max absolute error \(absolute), RMS \(rms), BF16 mismatches \(mismatches)"
+        }
+    }
 }
 
 private func floatFromBF16(_ value: UInt16) -> Float {
