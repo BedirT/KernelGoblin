@@ -44,10 +44,17 @@ public enum UVPreparation {
             implementation = "supplied-uv-preservation"
             exact = true
         case .preserveOrGenerate, .regenerate:
-            atlas = try ModelIOUVUnwrapper.unwrap(
-                positions: positions, faces: faces
-            )
-            implementation = "Apple-ModelIO-addUnwrappedTextureCoordinates"
+            do {
+                atlas = try ModelIOUVUnwrapper.unwrap(
+                    positions: positions, faces: faces
+                )
+                implementation = "Apple-ModelIO-addUnwrappedTextureCoordinates"
+            } catch {
+                atlas = try PerFaceUVUnwrapper.unwrap(
+                    positions: positions, faces: faces
+                )
+                implementation = "deterministic-native-per-face-atlas-fallback"
+            }
             exact = false
         }
         return UVPreparationResult(

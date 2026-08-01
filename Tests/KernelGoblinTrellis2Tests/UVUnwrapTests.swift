@@ -3,6 +3,28 @@ import Testing
 
 @Suite("Native TRELLIS.2 UV preparation")
 struct UVUnwrapTests {
+    @Test("deterministic fallback preserves every valid source face")
+    func perFaceTopologyPreservation() throws {
+        let positions = [
+            SIMD3<Float>(0, 0, 0), SIMD3<Float>(1, 0, 0),
+            SIMD3<Float>(1, 1, 0), SIMD3<Float>(0, 1, 0),
+            SIMD3<Float>(0.5, 0.5, 1),
+        ]
+        let faces = [
+            SIMD3<UInt32>(0, 1, 4), SIMD3<UInt32>(1, 2, 4),
+            SIMD3<UInt32>(2, 3, 4), SIMD3<UInt32>(3, 0, 4),
+            SIMD3<UInt32>(0, 3, 2), SIMD3<UInt32>(0, 2, 1),
+        ]
+        let first = try PerFaceUVUnwrapper.unwrap(positions: positions, faces: faces)
+        let second = try PerFaceUVUnwrapper.unwrap(positions: positions, faces: faces)
+        #expect(first == second)
+        #expect(first.faces.count == faces.count)
+        #expect(first.positions.count == faces.count * 3)
+        #expect(first.vertexMap.count == faces.count * 3)
+        #expect(Set(first.vertexMap) == Set(0..<UInt32(positions.count)))
+        #expect(first.uvs.allSatisfy { (0...1).contains($0.x) && (0...1).contains($0.y) })
+    }
+
     @Test("Model I/O produces deterministic seam topology and normalized UVs")
     func deterministicCubeAtlas() throws {
         let positions = [

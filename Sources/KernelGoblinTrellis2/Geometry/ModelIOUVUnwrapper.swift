@@ -128,6 +128,12 @@ public enum ModelIOUVUnwrapper {
         let outputFaces = stride(from: 0, to: outputIndices.count, by: 3).map {
             SIMD3<UInt32>(outputIndices[$0], outputIndices[$0 + 1], outputIndices[$0 + 2])
         }
+        guard outputFaces.count == filteredFaces.count else {
+            throw NativeRuntimeError.invalidArgument(
+                "Model I/O UV unwrap changed face count from \(filteredFaces.count) "
+                    + "to \(outputFaces.count)"
+            )
+        }
         return try UVAtlasMesh(
             positions: outputPositions, faces: outputFaces,
             uvs: outputUVs, vertexMap: vertexMap
