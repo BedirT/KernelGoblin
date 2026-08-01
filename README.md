@@ -68,13 +68,14 @@ baseline is exactly what the native Metal runtime is here to replace.
 | Sparse-structure 12-step trajectory | **Verified native execution; drift disclosed** | All 22 production model calls run over 4,096 tokens and the real 1,029-token context. Teacher-forced early/middle/late calls stay below `0.01376` normalized RMS; free-running BF16 feedback ends at `0.721` occupancy IoU rather than false exact-parity claims. The flow takes 840.8 s and peaks at 530.2 MiB on M3 Pro |
 | Sparse-structure occupancy decoder | **Verified native Metal stage** | All 74 real tensors execute at the production `16 -> 64` spatial shape; exact occupancy matches the authenticated MPS oracle, normalized RMS is `0.000181`, and the bounded arena peaks at 224 MiB |
 | Occupancy and coordinate extraction | **Verified native Swift** | Strict `> 0`, NaN/zero behavior, z-fast ordered coordinates, and exact 64-to-32 2x max pooling |
+| Shared sparse decoder block | **Verified native Metal slice** | Deterministic 3x3 neighbor maps, F16 submanifold convolution, LayerNorm32, 4x SiLU MLP, and residual graph match real shape-decoder block `0.0`; final normalized RMS is `0.000229` |
 | CPU mesh to flexible dual grid | **Verified reference extension** | Pinned O-Voxel algorithm through LibTorch, AppleClang portability patch, tetrahedron fixtures; native Swift bridge remains |
 | Sparse PBR sampling and glTF packing | **Verified reference component** | Bounded sampling, xatlas seams, RGBA and metallic-roughness packing, GLB reload; native assembly remains |
 | TRELLIS.2 512 image-to-3D | **Verified Torch/MPS oracle** | Default 12 steps, reloadable 61 MB GLB |
 | TRELLIS.2 1024 cascade | **Verified Torch/MPS oracle** | Default 12 steps, 15.28 GB maximum RSS, reloadable 272.8 MB GLB |
 | Full PBR image-to-3D | **In progress** | Native UV and synthetic bake pass; full model artifact still needs final end-to-end proof |
 | Existing-mesh texturing | **In progress** | CPU voxelizer, UV policy, staged reference CLI, and PBR baker exist; full native model path remains |
-| Swift + Metal full model | **In progress** | Complete DINO, both SLat graphs, the production 12-step sparse trajectory, and its decoder handoff execute natively; raw-image preprocessing, production shape/texture sampling, shape/texture decoding, mesh extraction, and PBR assembly remain |
+| Swift + Metal full model | **In progress** | Complete DINO, both SLat graphs, the production 12-step sparse trajectory, its decoder handoff, and the shared sparse decoder block execute natively; raw-image preprocessing, production shape/texture sampling, decoder subdivision/heads, mesh extraction, and PBR assembly remain |
 
 That distinction matters. A kernel can be verified while a pipeline is still
 unfinished. We do not promote the larger claim just because a nearby test is

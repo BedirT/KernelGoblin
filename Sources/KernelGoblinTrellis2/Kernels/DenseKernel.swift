@@ -19,6 +19,7 @@ public final class DenseKernel: @unchecked Sendable {
     private let context: MetalContext
     private let linearF32Pipeline: MTLComputePipelineState
     private let linearBF16WeightsPipeline: MTLComputePipelineState
+    private let linearF16WeightsPipeline: MTLComputePipelineState
     private let linearBF16SIMDGroupPipeline: MTLComputePipelineState?
     private static let tileSize = 16
 
@@ -40,6 +41,16 @@ public final class DenseKernel: @unchecked Sendable {
         }
         self.linearBF16WeightsPipeline = try context.device.makeComputePipelineState(
             function: bf16Function
+        )
+        guard let f16Function = library.makeFunction(
+            name: "kg_linear_tiled_f16_weights_f32_output"
+        ) else {
+            throw NativeRuntimeError.invalidArgument(
+                "kg_linear_tiled_f16_weights_f32_output is missing from Metal library"
+            )
+        }
+        self.linearF16WeightsPipeline = try context.device.makeComputePipelineState(
+            function: f16Function
         )
         do {
             guard enableSIMDGroupMatrix else {
@@ -128,6 +139,30 @@ public final class DenseKernel: @unchecked Sendable {
             pipeline: selectedPipeline,
             elementWidth: MemoryLayout<UInt16>.stride,
             simdgroupMatrix: usesSIMDGroupMatrix,
+            input: input,
+            checkpoint: checkpoint,
+            weightOffset: weightOffset,
+            biasOffset: biasOffset,
+            rows: rows,
+            inputChannels: inputChannels,
+            outputChannels: outputChannels,
+            output: output
+        )
+    }
+
+    public func linearF16WeightsF32Output(
+        input: MTLBuffer,
+        checkpoint: MTLBuffer,
+        weightOffset: Int,
+        biasOffset: Int? = nil,
+        rows: Int,
+        inputChannels: Int,
+        outputChannels: Int,
+        output: MTLBuffer
+    ) throws {
+        try linear(
+            pipeline: linearF16WeightsPipeline,
+            elementWidth: MemoryLayout<UInt16>.stride,
             input: input,
             checkpoint: checkpoint,
             weightOffset: weightOffset,

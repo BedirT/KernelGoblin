@@ -1,6 +1,6 @@
 import Foundation
 
-public struct SparseStructureCoordinate: Equatable, Sendable {
+public struct SparseStructureCoordinate: Equatable, Hashable, Sendable {
     public let batch: Int32
     public let x: Int32
     public let y: Int32

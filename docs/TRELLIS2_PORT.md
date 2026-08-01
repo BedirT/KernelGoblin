@@ -14,8 +14,10 @@ The production Apple port is **Swift + Metal with no Torch dependency**. It
 already validates and memory-maps real safetensors files, owns bounded Metal
 scratch, executes the complete 24-block DINOv3 conditioner and both TRELLIS
 SLat flows through native samplers, and includes native Morton and UV-raster
-kernels. Native raw-image preprocessing, sparse structure, decoding,
-upstream-faithful PBR export, and existing-mesh texturing remain in progress.
+kernels. The native sparse-structure trajectory and the first shared shape/texture
+decoder block are now verified. Raw-image preprocessing, decoder subdivision and
+semantic heads, upstream-faithful PBR export, and existing-mesh texturing remain
+in progress.
 
 That split is deliberate. A finished reference graph tells us what native code
 must match. A native kernel test tells us one operation is correct. Neither is
@@ -61,11 +63,12 @@ settings for all eight 512 components are machine-readable in
 | Sparse-structure production flow | Verified native 12-step execution; drift disclosed | All 22 calls at 4,096 tokens; teacher-forced probes stay below `0.01376` normalized RMS, free-running occupancy reaches `0.7208` IoU, and the arena peaks at 555,905,112 bytes |
 | Sparse occupancy decoder | Verified native Metal stage | All 74 real tensors at production 16-to-64 size, exact occupancy parity, `0.000181` normalized RMS, 224 MiB peak arena |
 | Occupancy extraction | Verified native Swift | Strict threshold, bit packing, ordered coordinates, and exact 2x pooling |
+| Shared sparse decoder block | Verified native Metal slice | Real shape-decoder block `0.0`, deterministic 3x3 neighbor map, F16 submanifold convolution and MLP boundaries; final normalized RMS `0.000229` |
 | Morton coding | Verified native Metal | Bit-exact differential and randomized round trips |
 | UV raster | Verified analytic Metal slice | Physical render, analytic coverage/interpolation; nvdiffrast CUDA goldens pending |
 | PBR bake | Experimental reference | Synthetic component tests and GLB reload; upstream mesh semantics pending |
 | Existing-mesh texturing | In progress | Staged reference orchestration exists; complete artifact proof pending |
-| Full Swift + Metal model | In progress | Complete DINO, both SLat graphs, the 12-step sparse trajectory, and decoder handoff execute natively; image preprocessing, production shape/texture runs, remaining decoders, mesh extraction, and PBR assembly remain |
+| Full Swift + Metal model | In progress | Complete DINO, both SLat graphs, the 12-step sparse trajectory, decoder handoff, and shared decoder block execute natively; image preprocessing, production shape/texture runs, subdivision/heads, mesh extraction, and PBR assembly remain |
 
 ## What The Reference Run Does
 

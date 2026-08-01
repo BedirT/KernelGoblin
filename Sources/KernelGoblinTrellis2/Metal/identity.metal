@@ -171,6 +171,47 @@ kernel void kg_linear_tiled_bf16_weights_f32_output(
   }
 }
 
+kernel void kg_linear_tiled_f16_weights_f32_output(
+    const device float* input [[buffer(0)]],
+    const device uchar* checkpoint [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant LinearF32Params& params [[buffer(3)]],
+    uint2 group [[threadgroup_position_in_grid]],
+    uint2 local [[thread_position_in_threadgroup]]) {
+  threadgroup float input_tile[16 * 16];
+  threadgroup float weight_tile[16 * 16];
+  const uint row = group.y * kg_linear_tile + local.y;
+  const uint output_channel = group.x * kg_linear_tile + local.x;
+  const device half* weight =
+      reinterpret_cast<const device half*>(checkpoint + params.weight_offset);
+  const device half* bias =
+      reinterpret_cast<const device half*>(checkpoint + params.bias_offset);
+  float value = output_channel < params.output_channels && params.has_bias
+      ? float(bias[output_channel]) : 0.0f;
+  for (uint channel_base = 0; channel_base < params.input_channels;
+       channel_base += kg_linear_tile) {
+    const uint channel = channel_base + local.x;
+    input_tile[local.y * kg_linear_tile + local.x] =
+        row < params.rows && channel < params.input_channels
+            ? input[row * params.input_channels + channel] : 0.0f;
+    const uint tile_output_channel = group.x * kg_linear_tile + local.y;
+    weight_tile[local.y * kg_linear_tile + local.x] =
+        tile_output_channel < params.output_channels && channel < params.input_channels
+            ? float(weight[tile_output_channel * params.input_channels + channel]) : 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (row < params.rows && output_channel < params.output_channels) {
+      for (uint tile_channel = 0; tile_channel < kg_linear_tile; ++tile_channel) {
+        value = fma(input_tile[local.y * kg_linear_tile + tile_channel],
+                    weight_tile[local.x * kg_linear_tile + tile_channel], value);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (row < params.rows && output_channel < params.output_channels) {
+    output[row * params.output_channels + output_channel] = value;
+  }
+}
+
 struct PatchEmbedF32Params {
   ulong weight_offset;
   ulong bias_offset;
@@ -375,6 +416,35 @@ kernel void kg_layer_norm_f32_affine_f32(
     output[base + channel] = params.has_affine
         ? fma(normalized, weight[channel], bias[channel])
         : normalized;
+  }
+}
+
+kernel void kg_layer_norm_f32_affine_f16(
+    const device float* input [[buffer(0)]],
+    const device uchar* checkpoint [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant LayerNormParams& params [[buffer(3)]],
+    uint row [[thread_position_in_grid]]) {
+  if (row >= params.rows) return;
+  const uint base = row * params.channels;
+  float mean = 0.0f;
+  for (uint channel = 0; channel < params.channels; ++channel) mean += input[base + channel];
+  mean /= float(params.channels);
+  float variance = 0.0f;
+  for (uint channel = 0; channel < params.channels; ++channel) {
+    const float centered = input[base + channel] - mean;
+    variance = fma(centered, centered, variance);
+  }
+  variance /= float(params.channels);
+  const float inverse_std = rsqrt(variance + params.epsilon);
+  const device half* weight =
+      reinterpret_cast<const device half*>(checkpoint + params.weight_offset);
+  const device half* bias =
+      reinterpret_cast<const device half*>(checkpoint + params.bias_offset);
+  for (uint channel = 0; channel < params.channels; ++channel) {
+    const float normalized = (input[base + channel] - mean) * inverse_std;
+    output[base + channel] = params.has_affine
+        ? fma(normalized, float(weight[channel]), float(bias[channel])) : normalized;
   }
 }
 

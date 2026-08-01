@@ -22,6 +22,7 @@ public final class NormalizationKernel: @unchecked Sendable {
     private let context: MetalContext
     private let layerNormPipeline: MTLComputePipelineState
     private let layerNormF32AffinePipeline: MTLComputePipelineState
+    private let layerNormF16AffinePipeline: MTLComputePipelineState
     private let rmsNormPipeline: MTLComputePipelineState
 
     public init(context: MetalContext) throws {
@@ -31,12 +32,18 @@ public final class NormalizationKernel: @unchecked Sendable {
               let layerNormF32Affine = library.makeFunction(
                   name: "kg_layer_norm_f32_affine_f32"
               ),
+              let layerNormF16Affine = library.makeFunction(
+                  name: "kg_layer_norm_f32_affine_f16"
+              ),
               let rmsNorm = library.makeFunction(name: "kg_multihead_rms_norm_f32") else {
             throw NativeRuntimeError.invalidArgument("normalization Metal functions are missing")
         }
         self.layerNormPipeline = try context.device.makeComputePipelineState(function: layerNorm)
         self.layerNormF32AffinePipeline = try context.device.makeComputePipelineState(
             function: layerNormF32Affine
+        )
+        self.layerNormF16AffinePipeline = try context.device.makeComputePipelineState(
+            function: layerNormF16Affine
         )
         self.rmsNormPipeline = try context.device.makeComputePipelineState(function: rmsNorm)
     }
@@ -61,6 +68,19 @@ public final class NormalizationKernel: @unchecked Sendable {
     ) throws {
         try layerNorm(
             pipeline: layerNormF32AffinePipeline, affineWidth: 4,
+            input: input, checkpoint: checkpoint, rows: rows, channels: channels,
+            weightOffset: weightOffset, biasOffset: biasOffset,
+            epsilon: epsilon, output: output
+        )
+    }
+
+    public func layerNormF32WeightsF16(
+        input: MTLBuffer, checkpoint: MTLBuffer, rows: Int, channels: Int,
+        weightOffset: Int? = nil, biasOffset: Int? = nil, epsilon: Float = 1e-6,
+        output: MTLBuffer
+    ) throws {
+        try layerNorm(
+            pipeline: layerNormF16AffinePipeline, affineWidth: 2,
             input: input, checkpoint: checkpoint, rows: rows, channels: channels,
             weightOffset: weightOffset, biasOffset: biasOffset,
             epsilon: epsilon, output: output
