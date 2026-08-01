@@ -6,6 +6,7 @@ public final class MetalContext: @unchecked Sendable {
     public let queue: MTLCommandQueue
     public let arena: MetalBufferArena?
     let mpsGraphDense: MPSGraphDenseKernel
+    let mpsGraphAttention: MPSGraphAttentionKernel
 
     public init(arenaCapacity: Int? = nil) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -20,6 +21,7 @@ public final class MetalContext: @unchecked Sendable {
             try MetalBufferArena(device: device, capacity: $0, label: "KernelGoblin arena")
         }
         self.mpsGraphDense = MPSGraphDenseKernel(queue: queue)
+        self.mpsGraphAttention = MPSGraphAttentionKernel(queue: queue)
     }
 
     public func library(named name: String) throws -> MTLLibrary {

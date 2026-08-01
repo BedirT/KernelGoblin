@@ -1,6 +1,12 @@
 import Foundation
 import Metal
 
+public enum AttentionImplementation: Sendable {
+    case automatic
+    case metal
+    case mpsGraph
+}
+
 public struct AttentionSegments: Equatable, Sendable {
     public let offsets: [Int]
 
@@ -58,21 +64,24 @@ public final class AttentionKernel: @unchecked Sendable {
     public func fusedF32(
         queries: MTLBuffer, keys: MTLBuffer, values: MTLBuffer,
         queryCount: Int, keyCount: Int, heads: Int, dimensions: Int,
-        output: MTLBuffer
+        output: MTLBuffer,
+        implementation: AttentionImplementation = .automatic
     ) throws {
         let querySegments = try AttentionSegments(offsets: [0, queryCount])
         let keySegments = try AttentionSegments(offsets: [0, keyCount])
         try segmentedF32(
             queries: queries, keys: keys, values: values,
             querySegments: querySegments, keySegments: keySegments,
-            heads: heads, dimensions: dimensions, output: output
+            heads: heads, dimensions: dimensions, output: output,
+            implementation: implementation
         )
     }
 
     public func segmentedF32(
         queries: MTLBuffer, keys: MTLBuffer, values: MTLBuffer,
         querySegments: AttentionSegments, keySegments: AttentionSegments,
-        heads: Int, dimensions: Int, output: MTLBuffer
+        heads: Int, dimensions: Int, output: MTLBuffer,
+        implementation: AttentionImplementation = .automatic
     ) throws {
         let queryElements = try checkedProduct(querySegments.totalCount, heads, dimensions)
         let keyElements = try checkedProduct(keySegments.totalCount, heads, dimensions)
@@ -109,6 +118,34 @@ public final class AttentionKernel: @unchecked Sendable {
                     "attention segment exceeds Metal 32-bit indexing"
                 )
             }
+        }
+        let operationCount = querySegments.totalCount.multipliedReportingOverflow(
+            by: keySegments.totalCount
+        )
+        let canUseMPSGraph = context.mpsGraphAttention.isSupported
+            && querySegments.segmentCount == 1
+            && dimensions == 128
+            && !operationCount.overflow
+            && operationCount.partialValue >= 1_000_000
+        if implementation == .mpsGraph && !canUseMPSGraph {
+            throw NativeRuntimeError.invalidArgument(
+                "MPSGraph attention requires one large 128-wide segment on macOS 15 or newer"
+            )
+        }
+        if implementation == .mpsGraph || (implementation == .automatic && canUseMPSGraph) {
+            if #available(macOS 15.0, *) {
+                context.mpsGraphAttention.run(
+                    queries: queries,
+                    keys: keys,
+                    values: values,
+                    queryCount: querySegments.totalCount,
+                    keyCount: keySegments.totalCount,
+                    heads: heads,
+                    dimensions: dimensions,
+                    output: output
+                )
+            }
+            return
         }
         let useSIMDGroup = (dimensions == 64 || dimensions == 128)
             && simdgroupPipeline.threadExecutionWidth == 32

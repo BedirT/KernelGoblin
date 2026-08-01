@@ -22,8 +22,8 @@ reloadable GLB export on Apple Silicon.
 
 ## The Short Version
 
-- The production Apple runtime is **Swift + Metal**, with an optimized Apple
-  MPSGraph dense path on macOS 15.2 and newer. It does not import or link
+- The production Apple runtime is **Swift + Metal**, with optimized Apple
+  MPSGraph dense and attention paths on newer macOS releases. It does not import or link
   Python, PyTorch, MLX, or third-party Swift packages; macOS 14 keeps the
   custom Metal fallback.
 - Model stages are installed independently, hash-verified, memory-mapped, run,
@@ -139,9 +139,9 @@ stage ledger, hashes, and independent reload are in
 You need an Apple Silicon Mac, Xcode with the Metal toolchain, Swift 6.2+,
 CMake 3.25+, and Ninja.
 
-The runtime supports macOS 14. On macOS 15.2 and newer, large BF16 dense
-projections automatically use Apple's GPU-backed MPSGraph implementation after
-the same buffer and bounds validation. Small projections stay on our custom
+The runtime supports macOS 14. On macOS 15+, large 128-wide attention uses
+Apple's GPU-backed MPSGraph SDPA; on macOS 15.2+, large BF16 dense projections
+use MPSGraph as well. Small, segmented, or unavailable cases stay on our custom
 Metal kernels, where graph dispatch overhead would cost more than it saves.
 
 ```sh
@@ -218,6 +218,7 @@ Run the native verification ladder:
 ./kg model test trellis2
 ./kg model native-audit trellis2
 ./kg model native-benchmark trellis2
+./kg model native-attention-benchmark trellis2
 ./kg model native-pbr-benchmark trellis2
 ```
 
