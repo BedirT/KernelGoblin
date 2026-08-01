@@ -4,11 +4,24 @@ import Testing
 
 @Suite("Native TRELLIS.2 production pipeline")
 struct NativePipelineTests {
-    @Test("native installer supports generation-only and texturing-only selections")
+    @Test("geometry-only generation is an explicit production option")
+    func geometryOnlyOption() {
+        let options = Trellis2GenerationOptions(geometryOnly: true)
+        #expect(options.geometryOnly)
+        #expect(options.steps == 12)
+        #expect(options.seed == 42)
+    }
+
+    @Test("native installer supports geometry, generation, and texturing selections")
     func selectiveInstallManifest() {
+        let geometry = Trellis2NativeInstaller.components(for: .geometry)
         let generation = Trellis2NativeInstaller.components(for: .generate)
         let texturing = Trellis2NativeInstaller.components(for: .texture)
         let all = Trellis2NativeInstaller.components(for: .all)
+        #expect(Set(geometry.map(\.role)) == Set([
+            "dino", "sparse-structure-flow", "sparse-structure-decoder",
+            "shape-flow", "shape-decoder",
+        ]))
         #expect(generation.count == 7)
         #expect(!generation.contains { $0.role == "shape-encoder" })
         #expect(Set(texturing.map(\.role)) == Set([
@@ -58,7 +71,11 @@ struct NativePipelineTests {
         #expect(Set(checkpoints.allURLs.map(\.standardizedFileURL.path)) == Set(
             expected.map { hub.appendingPathComponent($0).standardizedFileURL.path }
         ))
-        try FileManager.default.removeItem(at: checkpoints.textureDecoder)
+        try FileManager.default.removeItem(at: try #require(checkpoints.textureDecoder))
+        let geometry = try Trellis2CheckpointSet.huggingFaceCache(
+            homeDirectory: root, geometryOnly: true
+        )
+        #expect(geometry.textureFlow == nil && geometry.textureDecoder == nil)
         #expect(throws: NativeRuntimeError.self) {
             _ = try Trellis2CheckpointSet.huggingFaceCache(homeDirectory: root)
         }

@@ -156,6 +156,7 @@ export HF_TOKEN=hf_...
 ./kg model setup trellis2
 
 # Or install only what one workflow needs.
+./kg model setup trellis2 --feature geometry
 ./kg model setup trellis2 --feature generate
 ./kg model setup trellis2 --feature texture
 ```
@@ -169,6 +170,24 @@ Generate a PBR GLB from an image:
   --steps 12 \
   --texture-size 2048
 ```
+
+Generate only geometry when you want to inspect the shape before spending time
+on texture flow, UVs, and baking:
+
+```sh
+./kg model run trellis2 \
+  --input image.png \
+  --output build/trellis2/my-mesh.glb \
+  --steps 12 \
+  --geometry-only
+```
+
+`--geometry-only` stops after shape decoding, small-hole repair, and mesh
+extraction. The GLB gets normals and a neutral factor-only material, but no
+UV attribute or model-generated textures. A geometry-only install needs five
+pinned checkpoints instead of the seven used for full image generation. It does
+not load or execute texture flow, the texture decoder, UV preparation, Metal
+rasterization, inpainting, or PBR baking.
 
 Texture an existing mesh from a reference image:
 

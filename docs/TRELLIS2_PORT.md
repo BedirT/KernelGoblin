@@ -212,6 +212,23 @@ arena peaks were 1,731,914,492 bytes in shape decoding and 1,728,631,324 bytes
 in texture decoding. The 39-minute wall time is dominated by three complete
 12-step diffusion flows, not by GLB writing.
 
+## Geometry-Only Mode
+
+`./kg model run trellis2 --geometry-only` follows the production image path
+through DINOv3, sparse-structure flow and decoding, shape flow, shape decoding,
+small-hole repair, and mesh extraction. It then writes and reloads a GLB with
+normals and a neutral factor-only material, without emitting a UV accessor.
+Texture flow, texture decoding, UV work, rasterization, inpainting, and PBR
+baking are not opened or executed. `--feature geometry` installs only the five
+checkpoints this path opens.
+
+A one-step Hisar control-path run under Metal API validation completed in
+198.94 seconds, preserved 1,684,057 generated vertices and 3,671,130 faces in
+the native GLB contract, reloaded through both the native validator and Assimp,
+and recorded zero swaps. This proves stage selection and artifact integrity; it
+is not a default-quality geometry claim. Default-quality inspection still uses
+12 steps.
+
 ## Numerical Drift And Semantic Differences
 
 | Difference | Impact | Current contract |

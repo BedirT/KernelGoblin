@@ -6,6 +6,42 @@ import Testing
 
 @Suite("Native TRELLIS.2 PBR export")
 struct PBRExportTests {
+    @Test("geometry-only GLB has valid indices, no UVs, and a neutral material")
+    func geometryOnlyRoundTrip() throws {
+        let positions = [
+            SIMD3<Float>(0, 0, 0),
+            SIMD3<Float>(1, 0, 0),
+            SIMD3<Float>(0, 1, 0),
+            SIMD3<Float>(0, 0, 1),
+        ]
+        let faces = [
+            SIMD3<UInt32>(0, 2, 1),
+            SIMD3<UInt32>(0, 1, 3),
+            SIMD3<UInt32>(0, 3, 2),
+            SIMD3<UInt32>(1, 2, 3),
+        ]
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("geometry.glb")
+        let validation = try GeometryGLBWriter.write(
+            to: output, positions: positions, faces: faces
+        )
+        #expect(validation == PBRGLBValidation(
+            vertexCount: 4, indexCount: 12, imageCount: 0,
+            textureWidth: 0, textureHeight: 0,
+            alphaMode: "OPAQUE", doubleSided: true
+        ))
+        #expect(try Data(contentsOf: output).count > 0)
+        let document = try glbDocument(at: output)
+        let meshes = try #require(document["meshes"] as? [[String: Any]])
+        let primitives = try #require(meshes[0]["primitives"] as? [[String: Any]])
+        let attributes = try #require(primitives[0]["attributes"] as? [String: Any])
+        #expect(attributes["TEXCOORD_0"] == nil)
+        #expect(document["images"] == nil && document["textures"] == nil)
+    }
+
     @Test("supplied-UV sparse fields export through the complete native PBR path")
     func nativeExportCallSite() throws {
         let context = try MetalContext(arenaCapacity: 4 * 1024 * 1024)
@@ -158,4 +194,14 @@ private func readUInt32(_ data: Data, at offset: Int) -> UInt32 {
     data[offset..<(offset + 4)].enumerated().reduce(UInt32.zero) {
         $0 | UInt32($1.element) << UInt32($1.offset * 8)
     }
+}
+
+private func glbDocument(at url: URL) throws -> [String: Any] {
+    let data = try Data(contentsOf: url)
+    let jsonLength = Int(readUInt32(data, at: 12))
+    return try #require(
+        JSONSerialization.jsonObject(
+            with: data.subdata(in: 20..<(20 + jsonLength))
+        ) as? [String: Any]
+    )
 }

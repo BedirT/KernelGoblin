@@ -33,7 +33,9 @@ enum KernelGoblinTrellis2Command {
             let validation = try PBRGLBValidator.validate(
                 url: URL(fileURLWithPath: arguments[1])
             )
-            print("PASS: reloaded GLB PBR artifact")
+            print(validation.imageCount == 0
+                ? "PASS: reloaded GLB geometry artifact"
+                : "PASS: reloaded GLB PBR artifact")
             print("vertices=\(validation.vertexCount) indices=\(validation.indexCount)")
             print("textures=\(validation.imageCount) size=\(validation.textureWidth)x\(validation.textureHeight)")
             print("alpha_mode=\(validation.alphaMode) double_sided=\(validation.doubleSided)")
@@ -112,22 +114,31 @@ enum KernelGoblinTrellis2Command {
         try options.requireOnly([
             "input", "output", "seed", "steps", "texture-size",
             "alpha-mode", "checkpoint-root", "evidence", "accept-opaque",
-            "require-alpha", "max-stage-memory-gib",
+            "require-alpha", "geometry-only", "max-stage-memory-gib",
         ])
         let input = URL(fileURLWithPath: try options.required("input"))
         var output = URL(fileURLWithPath: try options.required("output"))
         if output.pathExtension.lowercased() != "glb" {
-            output.appendPathComponent("trellis2-512-pbr.glb")
+            output.appendPathComponent(
+                options.flag("geometry-only")
+                    ? "trellis2-512-mesh.glb" : "trellis2-512-pbr.glb"
+            )
         }
+        let geometryOnly = options.flag("geometry-only")
         let checkpoints: Trellis2CheckpointSet
         if let root = options.value("checkpoint-root") {
             checkpoints = try Trellis2NativeInstaller.checkpointSet(
-                root: URL(fileURLWithPath: root, isDirectory: true)
+                root: URL(fileURLWithPath: root, isDirectory: true),
+                geometryOnly: geometryOnly
             )
-        } else if let installed = try? Trellis2NativeInstaller.checkpointSet() {
+        } else if let installed = try? Trellis2NativeInstaller.checkpointSet(
+            geometryOnly: geometryOnly
+        ) {
             checkpoints = installed
         } else {
-            checkpoints = try Trellis2CheckpointSet.huggingFaceCache()
+            checkpoints = try Trellis2CheckpointSet.huggingFaceCache(
+                geometryOnly: geometryOnly
+            )
         }
         let seed = try options.uint64("seed", default: 42)
         let steps = try options.integer("steps", default: 12, range: 1...100)
@@ -162,7 +173,9 @@ enum KernelGoblinTrellis2Command {
             checkpoints: checkpoints,
             options: Trellis2GenerationOptions(
                 seed: seed, steps: steps, textureSize: textureSize,
-                alphaMode: alphaMode, memory: memory
+                alphaMode: alphaMode,
+                geometryOnly: geometryOnly,
+                memory: memory
             ),
             outputURL: output,
             progress: reportProgress
@@ -175,13 +188,19 @@ enum KernelGoblinTrellis2Command {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try encoder.encode(evidence).write(to: evidenceURL, options: .atomic)
-        print("PASS: native Swift + Metal TRELLIS.2 generation")
+        print(options.flag("geometry-only")
+            ? "PASS: native Swift + Metal TRELLIS.2 geometry generation"
+            : "PASS: native Swift + Metal TRELLIS.2 generation")
         print("output=\(output.path)")
         print("evidence=\(evidenceURL.path)")
         print("sha256=\(evidence.outputSHA256)")
         print("mesh_vertices=\(evidence.meshVertexCount) mesh_faces=\(evidence.meshFaceCount)")
         print("output_vertices=\(evidence.outputVertexCount) output_faces=\(evidence.outputFaceCount)")
-        print("texture=\(evidence.textureSize)x\(evidence.textureSize) covered=\(evidence.coveredTexels)")
+        if options.flag("geometry-only") {
+            print("mode=geometry-only texture_flow=false texture_decoder=false pbr_bake=false")
+        } else {
+            print("texture=\(evidence.textureSize)x\(evidence.textureSize) covered=\(evidence.coveredTexels)")
+        }
     }
 
     private static func texture(arguments: [String]) throws {
@@ -270,7 +289,7 @@ enum KernelGoblinTrellis2Command {
         KernelGoblin TRELLIS.2 - native Swift + Metal
 
         Usage:
-          kg-trellis2 install [--root DIR] [--feature generate|texture|all]
+          kg-trellis2 install [--root DIR] [--feature geometry|generate|texture|all]
           kg-trellis2 generate --input IMAGE --output FILE.glb [options]
           kg-trellis2 texture --mesh MESH --input IMAGE --output FILE.glb [options]
           kg-trellis2 verify-glb FILE.glb
@@ -285,6 +304,7 @@ enum KernelGoblinTrellis2Command {
           --seed N                     Native deterministic seed (default: 42)
           --steps N                    Euler steps for all flows (default: 12)
           --texture-size N             Square PBR texture size (default: 2048)
+          --geometry-only              Stop after shape decoding and write an untextured GLB
           --alpha-mode MODE            GLB material mode: OPAQUE, BLEND, or MASK
           --checkpoint-root DIR         Native install root
           --evidence FILE              Evidence JSON path
@@ -751,7 +771,7 @@ private struct CLIOptions {
             guard values[name] == nil, !flags.contains(name) else {
                 throw Exit.invalidArguments
             }
-            if name == "accept-opaque" || name == "require-alpha" {
+            if ["accept-opaque", "require-alpha", "geometry-only"].contains(name) {
                 flags.insert(name)
                 index += 1
                 continue

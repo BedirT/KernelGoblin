@@ -21,6 +21,7 @@ public struct NativeInstallReceipt: Codable, Equatable, Sendable {
 }
 
 public enum Trellis2InstallFeature: String, Codable, Sendable {
+    case geometry
     case generate
     case texture
     case all
@@ -91,8 +92,11 @@ public enum Trellis2NativeInstaller {
             .appendingPathComponent("trellis2-512", isDirectory: true)
     }
 
-    public static func checkpointSet(root: URL = defaultRoot) throws -> Trellis2CheckpointSet {
-        let required = components(for: .generate)
+    public static func checkpointSet(
+        root: URL = defaultRoot,
+        geometryOnly: Bool = false
+    ) throws -> Trellis2CheckpointSet {
+        let required = components(for: geometryOnly ? .geometry : .generate)
         let files = Dictionary(uniqueKeysWithValues: required.map {
             ($0.role, installedURL(for: $0, root: root))
         })
@@ -109,9 +113,9 @@ public enum Trellis2NativeInstaller {
             sparseStructureFlow: files["sparse-structure-flow"]!,
             sparseStructureDecoder: files["sparse-structure-decoder"]!,
             shapeFlow: files["shape-flow"]!,
-            textureFlow: files["texture-flow"]!,
+            textureFlow: files["texture-flow"],
             shapeDecoder: files["shape-decoder"]!,
-            textureDecoder: files["texture-decoder"]!
+            textureDecoder: files["texture-decoder"]
         )
     }
 
@@ -236,6 +240,11 @@ public enum Trellis2NativeInstaller {
             components
         case .generate:
             components.filter { $0.role != "shape-encoder" }
+        case .geometry:
+            components.filter {
+                !["shape-encoder", "texture-flow", "texture-decoder"]
+                    .contains($0.role)
+            }
         case .texture:
             components.filter {
                 ["dino", "shape-encoder", "texture-flow", "texture-decoder"]

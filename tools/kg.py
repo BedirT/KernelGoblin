@@ -801,6 +801,8 @@ def command_model_run(args: argparse.Namespace) -> None:
         command.append("--accept-opaque")
     if args.require_alpha:
         command.append("--require-alpha")
+    if args.geometry_only:
+        command.append("--geometry-only")
     if getattr(args, "checkpoint_root", None):
         command.extend(["--checkpoint-root", args.checkpoint_root])
     if getattr(args, "evidence", None):
@@ -888,7 +890,10 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("model")
         if name == "setup":
             sub.add_argument("--root")
-            sub.add_argument("--feature", choices=("generate", "texture", "all"), default="all")
+            sub.add_argument(
+                "--feature", choices=("geometry", "generate", "texture", "all"),
+                default="all",
+            )
         if name in ("test", "native-test"):
             sub.add_argument("--checkpoint-root")
             sub.add_argument("--checkpoint")
@@ -923,6 +928,7 @@ def parser() -> argparse.ArgumentParser:
     model_run.add_argument("--alpha-mode", choices=("OPAQUE", "BLEND", "MASK"), default="OPAQUE")
     model_run.add_argument("--accept-opaque", action="store_true")
     model_run.add_argument("--require-alpha", action="store_true")
+    model_run.add_argument("--geometry-only", action="store_true")
     model_run.add_argument("--checkpoint-root")
     model_run.add_argument("--evidence")
     model_run.add_argument("--max-stage-memory-gib", type=int)

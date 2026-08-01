@@ -14,18 +14,22 @@ public struct UVAtlasMesh: Equatable, Sendable {
         positions: [SIMD3<Float>], faces: [SIMD3<UInt32>],
         uvs: [SIMD2<Float>], vertexMap: [UInt32]
     ) throws {
-        guard !positions.isEmpty, positions.count == uvs.count,
+        guard !positions.isEmpty, (uvs.isEmpty || positions.count == uvs.count),
               positions.count == vertexMap.count, !faces.isEmpty,
               positions.count <= Int(UInt32.max) else {
             throw NativeRuntimeError.invalidArgument("invalid UV atlas mesh shape")
         }
         for index in positions.indices {
             let position = positions[index]
-            let uv = uvs[index]
-            guard position.x.isFinite, position.y.isFinite, position.z.isFinite,
-                  uv.x.isFinite, uv.y.isFinite,
-                  uv.x >= 0, uv.x <= 1, uv.y >= 0, uv.y <= 1 else {
+            guard position.x.isFinite, position.y.isFinite, position.z.isFinite else {
                 throw NativeRuntimeError.invalidArgument("invalid UV atlas vertex")
+            }
+            if !uvs.isEmpty {
+                let uv = uvs[index]
+                guard uv.x.isFinite, uv.y.isFinite,
+                      uv.x >= 0, uv.x <= 1, uv.y >= 0, uv.y <= 1 else {
+                    throw NativeRuntimeError.invalidArgument("invalid UV atlas vertex")
+                }
             }
         }
         for face in faces {
@@ -56,12 +60,13 @@ public enum PBRGLBWriter {
         atlas: UVAtlasMesh,
         sourcePositions: [SIMD3<Float>],
         sourceFaces: [SIMD3<UInt32>],
-        textures: PBRTextureSet,
+        textures: PBRTextureSet?,
         alphaMode: String = "OPAQUE",
         doubleSided: Bool = true
     ) throws -> Data {
         guard ["OPAQUE", "BLEND", "MASK"].contains(alphaMode),
               !sourcePositions.isEmpty, !sourceFaces.isEmpty,
+              (textures == nil || !atlas.uvs.isEmpty),
               atlas.vertexMap.allSatisfy({ Int($0) < sourcePositions.count }) else {
             throw NativeRuntimeError.invalidArgument("invalid PBR GLB mesh contract")
         }
@@ -72,14 +77,18 @@ public enum PBRGLBWriter {
         let convertedPositions = atlas.positions.map { SIMD3<Float>($0.x, $0.z, -$0.y) }
         let convertedNormals = normals.map { SIMD3<Float>($0.x, $0.z, -$0.y) }
         let convertedUVs = atlas.uvs.map { SIMD2<Float>($0.x, 1 - $0.y) }
-        let basePNG = try encodePNG(
-            bytes: textures.baseColorRGBA, width: textures.width,
-            height: textures.height, components: 4
-        )
-        let materialPNG = try encodePNG(
-            bytes: textures.metallicRoughnessRGB, width: textures.width,
-            height: textures.height, components: 3
-        )
+        let basePNG = try textures.map {
+            try encodePNG(
+                bytes: $0.baseColorRGBA, width: $0.width,
+                height: $0.height, components: 4
+            )
+        }
+        let materialPNG = try textures.map {
+            try encodePNG(
+                bytes: $0.metallicRoughnessRGB, width: $0.width,
+                height: $0.height, components: 3
+            )
+        }
         var binary = Data()
         var views: [[String: Any]] = []
         func appendSection(_ data: Data, target: Int? = nil) -> Int {
@@ -93,11 +102,16 @@ public enum PBRGLBWriter {
         }
         let positionView = appendSection(floatData(convertedPositions), target: 34962)
         let normalView = appendSection(floatData(convertedNormals), target: 34962)
-        let uvView = appendSection(floatData(convertedUVs), target: 34962)
+        let uvView = convertedUVs.isEmpty
+            ? nil : appendSection(floatData(convertedUVs), target: 34962)
         let indexValues = atlas.faces.flatMap { [$0.x, $0.y, $0.z] }
         let indexView = appendSection(integerData(indexValues), target: 34963)
-        let baseView = appendSection(basePNG)
-        let materialView = appendSection(materialPNG)
+        let imageViews: (Int, Int)?
+        if let basePNG, let materialPNG {
+            imageViews = (appendSection(basePNG), appendSection(materialPNG))
+        } else {
+            imageViews = nil
+        }
         while binary.count % 4 != 0 { binary.append(0) }
         let minimum = SIMD3<Float>(
             convertedPositions.map(\.x).min()!, convertedPositions.map(\.y).min()!,
@@ -107,51 +121,71 @@ public enum PBRGLBWriter {
             convertedPositions.map(\.x).max()!, convertedPositions.map(\.y).max()!,
             convertedPositions.map(\.z).max()!
         )
-        let accessors: [[String: Any]] = [
+        var accessors: [[String: Any]] = [
             ["bufferView": positionView, "componentType": 5126,
              "count": convertedPositions.count, "type": "VEC3",
              "min": [minimum.x, minimum.y, minimum.z],
              "max": [maximum.x, maximum.y, maximum.z]],
             ["bufferView": normalView, "componentType": 5126,
              "count": convertedNormals.count, "type": "VEC3"],
-            ["bufferView": uvView, "componentType": 5126,
-             "count": convertedUVs.count, "type": "VEC2"],
-            ["bufferView": indexView, "componentType": 5125,
-             "count": indexValues.count, "type": "SCALAR"],
         ]
+        var attributes: [String: Int] = ["POSITION": 0, "NORMAL": 1]
+        if let uvView {
+            attributes["TEXCOORD_0"] = accessors.count
+            accessors.append([
+                "bufferView": uvView, "componentType": 5126,
+                "count": convertedUVs.count, "type": "VEC2",
+            ])
+        }
+        let indexAccessor = accessors.count
+        accessors.append([
+            "bufferView": indexView, "componentType": 5125,
+            "count": indexValues.count, "type": "SCALAR",
+        ])
+        var pbr: [String: Any] = [
+            "baseColorFactor": [1, 1, 1, 1],
+            "metallicFactor": 0,
+            "roughnessFactor": 1,
+        ]
+        if imageViews != nil {
+            pbr["baseColorTexture"] = ["index": 0]
+            pbr["metallicFactor"] = 1
+            pbr["metallicRoughnessTexture"] = ["index": 1]
+        }
         var material: [String: Any] = [
             "name": "TRELLIS.2 PBR",
-            "pbrMetallicRoughness": [
-                "baseColorFactor": [1, 1, 1, 1],
-                "baseColorTexture": ["index": 0],
-                "metallicFactor": 1,
-                "roughnessFactor": 1,
-                "metallicRoughnessTexture": ["index": 1],
-            ],
+            "pbrMetallicRoughness": pbr,
             "alphaMode": alphaMode,
             "doubleSided": doubleSided,
         ]
         if alphaMode == "MASK" { material["alphaCutoff"] = 0.5 }
-        let document: [String: Any] = [
+        var document: [String: Any] = [
             "asset": ["version": "2.0", "generator": "KernelGoblin Swift+Metal"],
             "scene": 0,
             "scenes": [["nodes": [0]]],
             "nodes": [["mesh": 0]],
             "meshes": [["name": "TRELLIS.2 mesh", "primitives": [[
-                "attributes": ["POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2],
-                "indices": 3, "material": 0,
+                "attributes": attributes,
+                "indices": indexAccessor, "material": 0,
             ]]]],
             "materials": [material],
-            "textures": [["sampler": 0, "source": 0], ["sampler": 0, "source": 1]],
-            "samplers": [["magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497]],
-            "images": [
-                ["bufferView": baseView, "mimeType": "image/png", "name": "baseColor"],
-                ["bufferView": materialView, "mimeType": "image/png", "name": "metallicRoughness"],
-            ],
             "accessors": accessors,
             "bufferViews": views,
             "buffers": [["byteLength": binary.count]],
         ]
+        if let imageViews {
+            document["textures"] = [
+                ["sampler": 0, "source": 0], ["sampler": 0, "source": 1],
+            ]
+            document["samplers"] = [[
+                "magFilter": 9729, "minFilter": 9987,
+                "wrapS": 10497, "wrapT": 10497,
+            ]]
+            document["images"] = [
+                ["bufferView": imageViews.0, "mimeType": "image/png", "name": "baseColor"],
+                ["bufferView": imageViews.1, "mimeType": "image/png", "name": "metallicRoughness"],
+            ]
+        }
         var json = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
         while json.count % 4 != 0 { json.append(0x20) }
         var result = Data()
@@ -170,7 +204,7 @@ public enum PBRGLBWriter {
     public static func write(
         to url: URL, atlas: UVAtlasMesh,
         sourcePositions: [SIMD3<Float>], sourceFaces: [SIMD3<UInt32>],
-        textures: PBRTextureSet, alphaMode: String = "OPAQUE",
+        textures: PBRTextureSet?, alphaMode: String = "OPAQUE",
         doubleSided: Bool = true
     ) throws {
         try encode(

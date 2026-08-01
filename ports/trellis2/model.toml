@@ -218,4 +218,7 @@ image_to_pbr_output_vertices = 10111590
 image_to_pbr_texture_size = 2048
 image_to_pbr_glb_sha256 = "b3e941111c1209f86311ec575ef09d110076c885e978e7063ad140d3049d79bf"
 image_to_pbr_evidence = "docs/evidence/trellis2-native-generation-m3pro-2026-08-01.md"
+geometry_only_status = "verified-native-one-step-control-path"
+geometry_only_skipped_stages = ["texture-flow", "texture-decoder", "uv-preparation", "pbr-bake"]
+geometry_only_checkpoint_count = 5
 full_model_status = "verified-native-512"

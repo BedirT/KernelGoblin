@@ -5,6 +5,7 @@ public struct PBRTextureSet: Equatable, Sendable {
     public let metallicRoughnessRGB: [UInt8]
     public let width: Int
     public let height: Int
+
 }
 
 public enum PBRTextureAssembler {

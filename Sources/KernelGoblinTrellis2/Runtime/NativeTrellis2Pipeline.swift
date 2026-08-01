@@ -6,18 +6,18 @@ public struct Trellis2CheckpointSet: Sendable {
     public let sparseStructureFlow: URL
     public let sparseStructureDecoder: URL
     public let shapeFlow: URL
-    public let textureFlow: URL
+    public let textureFlow: URL?
     public let shapeDecoder: URL
-    public let textureDecoder: URL
+    public let textureDecoder: URL?
 
     public init(
         dino: URL,
         sparseStructureFlow: URL,
         sparseStructureDecoder: URL,
         shapeFlow: URL,
-        textureFlow: URL,
+        textureFlow: URL?,
         shapeDecoder: URL,
-        textureDecoder: URL
+        textureDecoder: URL?
     ) {
         self.dino = dino
         self.sparseStructureFlow = sparseStructureFlow
@@ -29,7 +29,8 @@ public struct Trellis2CheckpointSet: Sendable {
     }
 
     public static func huggingFaceCache(
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        geometryOnly: Bool = false
     ) throws -> Self {
         let hub = homeDirectory.appendingPathComponent(
             ".cache/huggingface/hub", isDirectory: true
@@ -57,13 +58,13 @@ public struct Trellis2CheckpointSet: Sendable {
             shapeFlow: trellis.appendingPathComponent(
                 "slat_flow_img2shape_dit_1_3B_512_bf16.safetensors"
             ),
-            textureFlow: trellis.appendingPathComponent(
+            textureFlow: geometryOnly ? nil : trellis.appendingPathComponent(
                 "slat_flow_imgshape2tex_dit_1_3B_512_bf16.safetensors"
             ),
             shapeDecoder: trellis.appendingPathComponent(
                 "shape_dec_next_dc_f16c32_fp16.safetensors"
             ),
-            textureDecoder: trellis.appendingPathComponent(
+            textureDecoder: geometryOnly ? nil : trellis.appendingPathComponent(
                 "tex_dec_next_dc_f16c32_fp16.safetensors"
             )
         )
@@ -82,8 +83,8 @@ public struct Trellis2CheckpointSet: Sendable {
     public var allURLs: [URL] {
         [
             dino, sparseStructureFlow, sparseStructureDecoder, shapeFlow,
-            textureFlow, shapeDecoder, textureDecoder,
-        ]
+            shapeDecoder,
+        ] + [textureFlow, textureDecoder].compactMap { $0 }
     }
 }
 
@@ -121,8 +122,8 @@ public struct Trellis2TexturingCheckpointSet: Sendable {
         }
         return Self(
             dino: generation.dino, shapeEncoder: encoder,
-            textureFlow: generation.textureFlow,
-            textureDecoder: generation.textureDecoder
+            textureFlow: generation.textureFlow!,
+            textureDecoder: generation.textureDecoder!
         )
     }
 }
@@ -167,6 +168,7 @@ public struct Trellis2GenerationOptions: Equatable, Sendable {
     public var textureSize: Int
     public var uvPolicy: UVPreparationPolicy
     public var alphaMode: String
+    public var geometryOnly: Bool
     public var memory: Trellis2MemoryBudget
 
     public init(
@@ -175,6 +177,7 @@ public struct Trellis2GenerationOptions: Equatable, Sendable {
         textureSize: Int = 2048,
         uvPolicy: UVPreparationPolicy = .regenerate,
         alphaMode: String = "OPAQUE",
+        geometryOnly: Bool = false,
         memory: Trellis2MemoryBudget = Trellis2MemoryBudget()
     ) {
         self.seed = seed
@@ -182,6 +185,7 @@ public struct Trellis2GenerationOptions: Equatable, Sendable {
         self.textureSize = textureSize
         self.uvPolicy = uvPolicy
         self.alphaMode = alphaMode
+        self.geometryOnly = geometryOnly
         self.memory = memory
     }
 }
@@ -536,7 +540,7 @@ public final class NativeTrellis2Pipeline: @unchecked Sendable {
               normalizedImageCHW.count == 3 * imageWidth * imageHeight,
               normalizedImageCHW.allSatisfy({ $0.isFinite }),
               options.steps > 0,
-              options.textureSize > 1,
+              (options.geometryOnly || options.textureSize > 1),
               ["OPAQUE", "BLEND", "MASK"].contains(options.alphaMode) else {
             throw NativeRuntimeError.invalidArgument(
                 "native 512 generation requires finite 3x512x512 input and valid options"
@@ -658,33 +662,42 @@ public final class NativeTrellis2Pipeline: @unchecked Sendable {
         }
         stageEvidence.append(shapeSample.evidence)
 
-        progress?("texture-flow")
-        let textureNoise = try noise.makeBuffer(
-            device: conditioning.conditioning.device,
-            count: try checkedElements(coordinates.count, 32),
-            label: "TRELLIS texture noise"
-        )
-        let textureSample = try runStage(
-            name: "texture-flow", checkpointURL: checkpoints.textureFlow,
-            checkpointSHA256: CheckpointHashes.textureFlow,
-            arenaCapacity: options.memory.textureFlowBytes
-        ) { session in
-            try requireSameDevice(
-                session.device,
-                [textureNoise, shapeSample.value.latent, coordinateBuffer,
-                 conditioning.conditioning]
+        var textureSample: StageRun<StageSample>?
+        if !options.geometryOnly {
+            guard let textureFlowURL = checkpoints.textureFlow else {
+                throw NativeRuntimeError.invalidArgument(
+                    "PBR generation requires the texture-flow checkpoint"
+                )
+            }
+            progress?("texture-flow")
+            let textureNoise = try noise.makeBuffer(
+                device: conditioning.conditioning.device,
+                count: try checkedElements(coordinates.count, 32),
+                label: "TRELLIS texture noise"
             )
-            return try session.sampleTextureF32(
-                noise: textureNoise,
-                shapeLatent: shapeSample.value.latent,
-                coordinates: coordinateBuffer,
-                positiveConditioning: conditioning.conditioning,
-                tokens: coordinates.count,
-                conditioningTokens: conditioning.tokenCount,
-                parameters: .texture512(steps: options.steps)
-            )
+            let sample = try runStage(
+                name: "texture-flow", checkpointURL: textureFlowURL,
+                checkpointSHA256: CheckpointHashes.textureFlow,
+                arenaCapacity: options.memory.textureFlowBytes
+            ) { session in
+                try requireSameDevice(
+                    session.device,
+                    [textureNoise, shapeSample.value.latent, coordinateBuffer,
+                     conditioning.conditioning]
+                )
+                return try session.sampleTextureF32(
+                    noise: textureNoise,
+                    shapeLatent: shapeSample.value.latent,
+                    coordinates: coordinateBuffer,
+                    positiveConditioning: conditioning.conditioning,
+                    tokens: coordinates.count,
+                    conditioningTokens: conditioning.tokenCount,
+                    parameters: .texture512(steps: options.steps)
+                )
+            }
+            stageEvidence.append(sample.evidence)
+            textureSample = sample
         }
-        stageEvidence.append(textureSample.evidence)
 
         progress?("shape-decoder")
         let shapeDecoded = try runStage(
@@ -722,9 +735,73 @@ public final class NativeTrellis2Pipeline: @unchecked Sendable {
             elapsedSeconds: Date().timeIntervalSince(meshExtractionStarted)
         ))
 
+        if options.geometryOnly {
+            progress?("geometry-export")
+            let exportStarted = Date()
+            let validation = try GeometryGLBWriter.write(
+                to: outputURL,
+                positions: repairedMesh.vertices,
+                faces: repairedMesh.faces
+            )
+            stageEvidence.append(NativeStageEvidence(
+                name: "geometry-export",
+                checkpointSHA256: "none",
+                elapsedSeconds: Date().timeIntervalSince(exportStarted),
+                arenaCapacityBytes: 0,
+                arenaPeakBytes: 0,
+                arenaLiveAfterCloseBytes: 0,
+                cumulativeRequestedBytes: 0,
+                allocationCount: 0
+            ))
+            guard validation.vertexCount == repairedMesh.vertices.count,
+                  validation.indexCount == repairedMesh.faces.count * 3,
+                  validation.imageCount == 0,
+                  validation.textureWidth == 0,
+                  validation.textureHeight == 0 else {
+                throw NativeRuntimeError.invalidArgument(
+                    "reloaded geometry-only GLB does not match the generated mesh"
+                )
+            }
+            return Trellis2GenerationEvidence(
+                runtime: "swift-metal",
+                pipeline: "trellis2-image-to-mesh-512",
+                upstreamSourceRevision: Self.trellisSourceRevision,
+                weightsRevision: Self.trellisWeightsRevision,
+                device: conditioning.conditioning.device.name,
+                operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
+                inputSHA256: sourceInputSHA256,
+                imagePreprocessing: imagePreprocessing,
+                usedMeaningfulAlpha: usedMeaningfulAlpha,
+                seed: options.seed,
+                noiseAlgorithm: SeededGaussianNoise.algorithm,
+                steps: options.steps,
+                conditioningTokens: conditioning.tokenCount,
+                sparseCoordinateCount: coordinates.count,
+                shapeCoordinateCount: shapeDecoded.value.coordinates.count,
+                meshVertexCount: repairedMesh.vertices.count,
+                meshFaceCount: repairedMesh.faces.count,
+                outputVertexCount: validation.vertexCount,
+                outputFaceCount: validation.indexCount / 3,
+                uvImplementation: "geometry-only-no-uv",
+                uvExactUpstreamTier: false,
+                uvFingerprintSHA256: "not-applicable",
+                textureSize: 0,
+                coveredTexels: 0,
+                glbBytes: try Data(contentsOf: outputURL, options: [.mappedIfSafe]).count,
+                glbReloadValidated: true,
+                outputSHA256: try fileSHA256(at: outputURL),
+                stages: stageEvidence
+            )
+        }
+
         progress?("texture-decoder")
+        guard let textureSample, let textureDecoderURL = checkpoints.textureDecoder else {
+            throw NativeRuntimeError.invalidArgument(
+                "PBR generation requires the texture-decoder checkpoint"
+            )
+        }
         let textureDecoded = try runStage(
-            name: "texture-decoder", checkpointURL: checkpoints.textureDecoder,
+            name: "texture-decoder", checkpointURL: textureDecoderURL,
             checkpointSHA256: CheckpointHashes.textureDecoder,
             arenaCapacity: options.memory.textureDecoderBytes
         ) { session in
