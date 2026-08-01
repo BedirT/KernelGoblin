@@ -46,13 +46,30 @@ TRELLIS_FORBIDDEN_RUNTIME_APIS = (
 )
 
 
-def manifests() -> dict[str, dict]:
+def manifest_inventory() -> tuple[dict[str, dict], list[str]]:
     found: dict[str, dict] = {}
+    errors: list[str] = []
     for path in sorted((ROOT / "kernels").glob("*/*/kernel.toml")):
         with path.open("rb") as stream:
             manifest = tomllib.load(stream)
         manifest["_path"] = path
-        found[manifest["id"]] = manifest
+        kernel_id = manifest.get("id")
+        if not kernel_id:
+            errors.append(f"{path}: missing id")
+        elif kernel_id in found:
+            errors.append(
+                f"{path}: duplicate id {kernel_id!r}; first declared by "
+                f"{found[kernel_id]['_path']}"
+            )
+        else:
+            found[kernel_id] = manifest
+    return found, errors
+
+
+def manifests() -> dict[str, dict]:
+    found, errors = manifest_inventory()
+    if errors:
+        raise SystemExit("\n".join(f"ERROR: {error}" for error in errors))
     return found
 
 
@@ -160,13 +177,19 @@ def command_doctor(_: argparse.Namespace) -> None:
         "system": f"{platform.system()} {platform.machine()}",
         "cmake": shutil.which("cmake"),
         "ninja": shutil.which("ninja"),
-        "xcrun": shutil.which("xcrun"),
     }
+    has_metal = any("metal" in item.get("backends", []) for item in manifests().values())
+    has_cuda = any("cuda" in item.get("backends", []) for item in manifests().values())
+    if platform.system() == "Darwin" and has_metal:
+        checks["swift"] = shutil.which("swift")
+        checks["xcrun"] = shutil.which("xcrun")
+    elif has_cuda:
+        checks["nvcc"] = shutil.which("nvcc")
     failed = False
     for name, value in checks.items():
         print(f"{name:<10} {value or 'MISSING'}")
         failed |= value is None
-    if platform.system() == "Darwin" and shutil.which("xcrun"):
+    if platform.system() == "Darwin" and has_metal and shutil.which("xcrun"):
         result = subprocess.run(
             ["xcrun", "-f", "metal"], text=True, capture_output=True
         )
@@ -178,10 +201,7 @@ def command_doctor(_: argparse.Namespace) -> None:
 
 
 def command_validate(_: argparse.Namespace) -> None:
-    errors: list[str] = []
-    available = manifests()
-    preset_file = ROOT / "CMakePresets.json"
-    preset_text = preset_file.read_text()
+    available, errors = manifest_inventory()
     full_sha = re.compile(r"^[0-9a-f]{40}$")
 
     if not available:
@@ -199,8 +219,15 @@ def command_validate(_: argparse.Namespace) -> None:
                 errors.append(f"{item['_path']}: missing upstream.{field}")
         if upstream.get("revision") and not full_sha.match(upstream["revision"]):
             errors.append(f"{item['_path']}: upstream.revision must be a full lowercase commit SHA")
-        if item.get("cmake_preset") and f'"name": "{item["cmake_preset"]}"' not in preset_text:
-            errors.append(f"{item['_path']}: CMake preset is not declared")
+        for section in ("domain", "verification"):
+            values = item.get(section)
+            if not isinstance(values, dict) or not values:
+                errors.append(f"{item['_path']}: [{section}] must be a non-empty table")
+            elif any(value in (None, "", [], {}) for value in values.values()):
+                errors.append(f"{item['_path']}: [{section}] contains an empty value")
+        verification = item.get("verification", {})
+        if not verification.get("comparison"):
+            errors.append(f"{item['_path']}: verification.comparison is required")
         if not (item["_path"].parent / "README.md").is_file():
             errors.append(f"{item['_path'].parent}: missing README.md")
 
@@ -249,17 +276,39 @@ def command_validate(_: argparse.Namespace) -> None:
             errors.extend(f"{path}: {error}" for error in native_source_errors())
 
     agent_dir = ROOT / ".codex" / "agents"
+    required_roles = {
+        "upstream_researcher", "kernel_reviewer", "benchmark_reviewer",
+    }
+    seen_roles: set[str] = set()
     for path in sorted(agent_dir.glob("*.toml")):
         with path.open("rb") as stream:
             agent = tomllib.load(stream)
         for field in ("name", "description", "developer_instructions"):
             if not agent.get(field):
                 errors.append(f"{path}: missing {field}")
+        name = agent.get("name")
+        if name in seen_roles:
+            errors.append(f"{path}: duplicate agent role {name!r}")
+        elif name:
+            seen_roles.add(name)
+        if agent.get("sandbox_mode") != "read-only":
+            errors.append(f"{path}: sandbox_mode must be 'read-only'")
+    missing_roles = required_roles - seen_roles
+    if missing_roles:
+        errors.append("missing required agent roles: " + ", ".join(sorted(missing_roles)))
 
     skill_file = ROOT / ".agents" / "skills" / "port-gpu-kernel" / "SKILL.md"
     skill_text = skill_file.read_text() if skill_file.is_file() else ""
     if not skill_text.startswith("---\n") or "\nname: port-gpu-kernel\n" not in skill_text:
         errors.append(f"{skill_file}: invalid or missing skill frontmatter")
+    frontmatter = skill_text.split("---", 2)[1] if skill_text.startswith("---\n") else ""
+    if not re.search(r"(?m)^description:\s*\S", frontmatter):
+        errors.append(f"{skill_file}: frontmatter description is required")
+    skill_root = skill_file.parent
+    for reference in ("manifest-contract.md", "backend-checklists.md"):
+        path = skill_root / "references" / reference
+        if not path.is_file() or not path.read_text().strip():
+            errors.append(f"{skill_file}: missing non-empty reference {reference}")
     for required in (ROOT / "AGENTS.md", ROOT / "THIRD_PARTY_NOTICES.md", ROOT / ".codex" / "config.toml"):
         if not required.is_file():
             errors.append(f"missing required harness file: {required}")

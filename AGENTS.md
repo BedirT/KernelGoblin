@@ -36,7 +36,7 @@ correct accelerator implementation is proven.
 ./kg model setup trellis2
 ./kg model test trellis2
 ./kg model run trellis2 --input image.png --output build/trellis2/output
-./kg model run trellis2 --pipeline-type 1024_cascade \
+./kg model oracle-run trellis2 --pipeline-type 1024_cascade \
   --input image.png --output build/trellis2/output-1024
 ```
 

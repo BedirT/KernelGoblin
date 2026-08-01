@@ -7,9 +7,13 @@
 - A C++17 compiler.
 - Python 3.11+ standard library for `kg` and TOML validation. No virtual
   environment is needed for the current kernel.
+- Swift 6.2+ for native Apple model runtimes. It is checked only on macOS when
+  a Swift + Metal model runtime is registered.
 
-Run `./kg doctor` to locate required executables. Kernel-specific dependencies
-must remain optional and be installed only when that kernel is selected.
+Run `./kg doctor` to locate required executables for the current host. It does
+not demand Xcode on a CUDA/Linux machine or CUDA on a Metal-only Mac.
+Kernel-specific dependencies must remain optional and be installed only when
+that kernel is selected.
 
 ## Metal kernels
 
