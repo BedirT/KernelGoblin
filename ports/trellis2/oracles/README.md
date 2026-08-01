@@ -157,3 +157,24 @@ build/trellis2/.venv/bin/python \
   --device mps \
   --output build/trellis2/ss-decoder-r16-mps.f32
 ```
+
+The sparse shape-decoder fixtures require physical MPS with fallback disabled.
+The smaller trace isolates the first learned channel-to-spatial block; the full
+trace executes all 32 ConvNeXt blocks and all four subdivisions from the pinned
+948 MB checkpoint:
+
+```sh
+PYTORCH_ENABLE_MPS_FALLBACK=0 build/trellis2/.venv/bin/python \
+  ports/trellis2/oracles/export_sparse_c2s_block_fixture.py \
+  --checkpoint /path/to/shape_dec_next_dc_f16c32_fp16.safetensors \
+  --output Tests/KernelGoblinTrellis2Tests/Fixtures/shape-decoder-c2s0-4-mps.f32
+
+PYTORCH_ENABLE_MPS_FALLBACK=0 build/trellis2/.venv/bin/python \
+  ports/trellis2/oracles/export_shape_decoder_full_fixture.py \
+  --checkpoint /path/to/shape_dec_next_dc_f16c32_fp16.safetensors \
+  --output Tests/KernelGoblinTrellis2Tests/Fixtures/shape-decoder-full-mps.f32
+```
+
+The complete fixture begins with one sparse token and ends with 59 coordinates.
+It authenticates graph and dtype-boundary behavior, not production-size memory
+or throughput.

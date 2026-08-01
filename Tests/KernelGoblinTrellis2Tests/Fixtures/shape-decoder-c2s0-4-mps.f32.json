@@ -1,0 +1,179 @@
+{
+  "format": "KernelGoblin TRELLIS.2 shape decoder C2S block 0.4 MPS oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "model_source": "trellis2/models/sc_vaes/sparse_unet_vae.py",
+  "model_source_sha256": "aeb41237d1c93cf3a666870c3d18e7044ba420a4e7a29aad5795bb5204731a00",
+  "overlay_source": "ports/trellis2/overlays/conv_mps.py",
+  "overlay_source_sha256": "02c77f172289d58c193d70a915f755b12088d6a00294f58ab70d9794a7f7ede6",
+  "oracle_call": "SparseResBlockC2S3d(1024,512).forward with pinned MPS conv overlay",
+  "checkpoint_sha256": "e3b718d3e43e4f8780e9a24ac6fff231811a67e3b058e336e10fe654c911d581",
+  "torch_version": "2.13.0",
+  "pytorch_enable_mps_fallback": "0",
+  "device": "mps",
+  "coordinates": [
+    [
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      1,
+      0
+    ]
+  ],
+  "output_coordinates": [
+    [
+      0,
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      1,
+      1,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      1
+    ],
+    [
+      0,
+      0,
+      1,
+      1
+    ],
+    [
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      3,
+      0,
+      0
+    ],
+    [
+      0,
+      2,
+      1,
+      0
+    ],
+    [
+      0,
+      3,
+      1,
+      0
+    ],
+    [
+      0,
+      2,
+      1,
+      1
+    ],
+    [
+      0,
+      3,
+      2,
+      0
+    ],
+    [
+      0,
+      2,
+      2,
+      1
+    ],
+    [
+      0,
+      3,
+      2,
+      1
+    ],
+    [
+      0,
+      3,
+      3,
+      1
+    ]
+  ],
+  "trace_layout": {
+    "input": {
+      "offset_f32": 0,
+      "shape": [
+        3,
+        1024
+      ]
+    },
+    "subdivision": {
+      "offset_f32": 3072,
+      "shape": [
+        3,
+        8
+      ]
+    },
+    "norm1": {
+      "offset_f32": 3096,
+      "shape": [
+        3,
+        1024
+      ]
+    },
+    "conv1": {
+      "offset_f32": 6168,
+      "shape": [
+        3,
+        4096
+      ]
+    },
+    "upsampled_conv": {
+      "offset_f32": 18456,
+      "shape": [
+        13,
+        512
+      ]
+    },
+    "upsampled_skip": {
+      "offset_f32": 25112,
+      "shape": [
+        13,
+        128
+      ]
+    },
+    "norm2": {
+      "offset_f32": 26776,
+      "shape": [
+        13,
+        512
+      ]
+    },
+    "conv2": {
+      "offset_f32": 33432,
+      "shape": [
+        13,
+        512
+      ]
+    },
+    "output": {
+      "offset_f32": 40088,
+      "shape": [
+        13,
+        512
+      ]
+    }
+  },
+  "payload_sha256": "d0b1a32552b7a4eaec30c60d990c6263b99ae68c6a2137b5c1b41af7702ed167"
+}

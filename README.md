@@ -69,13 +69,15 @@ baseline is exactly what the native Metal runtime is here to replace.
 | Sparse-structure occupancy decoder | **Verified native Metal stage** | All 74 real tensors execute at the production `16 -> 64` spatial shape; exact occupancy matches the authenticated MPS oracle, normalized RMS is `0.000181`, and the bounded arena peaks at 224 MiB |
 | Occupancy and coordinate extraction | **Verified native Swift** | Strict `> 0`, NaN/zero behavior, z-fast ordered coordinates, and exact 64-to-32 2x max pooling |
 | Shared sparse decoder block | **Verified native Metal slice** | Deterministic 3x3 neighbor maps, F16 submanifold convolution, LayerNorm32, 4x SiLU MLP, and residual graph match real shape-decoder block `0.0`; final normalized RMS is `0.000229` |
-| CPU mesh to flexible dual grid | **Verified reference extension** | Pinned O-Voxel algorithm through LibTorch, AppleClang portability patch, tetrahedron fixtures; native Swift bridge remains |
+| Complete sparse shape decoder | **Verified native tiny-graph conformance** | All 32 ConvNeXt blocks, four learned subdivisions, final normalization, and seven-channel head execute from the real 948 MB checkpoint; 59 final coordinates match exactly and raw-head normalized RMS is `0.000628` |
+| Flexible dual-grid head and mesh extraction | **Verified native analytic slice** | Physical Metal transforms the seven-channel head; Swift preserves O-Voxel axis connectivity, missing-quad behavior, strict diagonal choice, and tie rule. A pinned O-Voxel differential and production decoder handoff remain |
+| CPU mesh to flexible dual grid | **Verified reference extension** | Pinned O-Voxel algorithm through LibTorch, AppleClang portability patch, tetrahedron fixtures; a native Swift implementation remains |
 | Sparse PBR sampling and glTF packing | **Verified reference component** | Bounded sampling, xatlas seams, RGBA and metallic-roughness packing, GLB reload; native assembly remains |
 | TRELLIS.2 512 image-to-3D | **Verified Torch/MPS oracle** | Default 12 steps, reloadable 61 MB GLB |
 | TRELLIS.2 1024 cascade | **Verified Torch/MPS oracle** | Default 12 steps, 15.28 GB maximum RSS, reloadable 272.8 MB GLB |
 | Full PBR image-to-3D | **In progress** | Native UV and synthetic bake pass; full model artifact still needs final end-to-end proof |
 | Existing-mesh texturing | **In progress** | CPU voxelizer, UV policy, staged reference CLI, and PBR baker exist; full native model path remains |
-| Swift + Metal full model | **In progress** | Complete DINO, both SLat graphs, the production 12-step sparse trajectory, its decoder handoff, and the shared sparse decoder block execute natively; raw-image preprocessing, production shape/texture sampling, decoder subdivision/heads, mesh extraction, and PBR assembly remain |
+| Swift + Metal full model | **In progress** | Complete DINO, both SLat graphs, the production 12-step sparse trajectory, its decoder handoff, and the complete shape-decoder graph execute natively; raw-image preprocessing, production shape/texture sampling, texture decoding, production mesh conformance, and PBR assembly remain |
 
 That distinction matters. A kernel can be verified while a pipeline is still
 unfinished. We do not promote the larger claim just because a nearby test is
@@ -348,11 +350,13 @@ for the newest native kernel boundary.
 
 ### Now
 
-- Finish the reusable Swift tensor runtime and page-aligned stage installer.
 - Replace the correctness-first quadratic attention kernel with a tiled native
   implementation, then exercise both flows at captured production token counts
   under the new hard Metal arena budget.
-- Complete the native DINOv3, TRELLIS flow, decoder, sampler, and PBR stages.
+- Reuse the verified shape-decoder backbone for guided six-channel texture
+  decoding, then authenticate the flexible dual-grid mesh handoff.
+- Finish native image preprocessing, stage installation, UV/remesh, raster,
+  texture bake, and material-aware GLB assembly.
 
 ### Next
 

@@ -264,3 +264,21 @@ alpha-aware preprocessing, Lanczos resize, RGB quantization, and ImageNet
 normalization remains a separate acceptance gate. The `StageSession` test now
 also proves the returned conditioning is standalone, arena live use reaches
 zero, and the checkpoint is unmapped after the queue drains.
+
+## Complete Native Sparse Shape Decoder
+
+The shape decoder now executes its complete checkpoint-defined graph in Swift
+and Metal: the 32-to-1,024 latent projection, all 32 sparse ConvNeXt blocks,
+four learned channel-to-spatial subdivisions, the final parameter-free
+LayerNorm, and the seven-channel flexible-dual-grid head. A pinned physical-MPS
+fixture exercises every layer from the real 948 MB checkpoint. The four
+subdivision boundaries stay below `0.00121` normalized RMS, all 59 final sparse
+coordinates match exactly, and the raw head reaches `0.000628` normalized RMS.
+
+That fixture deliberately starts with one sparse latent. It proves graph,
+ordering, dtype-boundary, and checkpoint fidelity, not production-size memory
+or runtime. The resulting head is transformed by a physical Metal kernel and
+the inference mesh is assembled in Swift using O-Voxel's three axis quads,
+missing-neighbor rejection, strict split-weight comparison, and split-two tie
+rule. Production decoder handoff and a pinned O-Voxel mesh differential remain
+acceptance gates before this becomes a model-level geometry claim.
