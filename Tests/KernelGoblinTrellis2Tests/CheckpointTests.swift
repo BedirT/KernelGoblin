@@ -490,8 +490,11 @@ struct CheckpointTests {
             let simdgroup = try #require(context.device.makeBuffer(
                 length: outputBytes, options: .storageModeShared
             ))
+            let mpsGraph = try #require(context.device.makeBuffer(
+                length: outputBytes, options: .storageModeShared
+            ))
             let canary: Float = -9876.5
-            for buffer in [tiled, simdgroup] {
+            for buffer in [tiled, simdgroup, mpsGraph] {
                 buffer.contents().assumingMemoryBound(to: Float.self)
                     .initialize(repeating: canary, count: outputElements + suffixElements)
             }
@@ -509,8 +512,15 @@ struct CheckpointTests {
                 outputChannels: shape.outputs, output: simdgroup,
                 implementation: .simdgroupMatrix
             )
+            try kernel.linearBF16WeightsF32Output(
+                input: input, checkpoint: checkpoint, weightOffset: weightOffset,
+                biasOffset: biasOffset, rows: shape.rows, inputChannels: shape.inputs,
+                outputChannels: shape.outputs, output: mpsGraph,
+                implementation: .mpsGraph
+            )
             let tiledValues = tiled.contents().assumingMemoryBound(to: Float.self)
             let simdgroupValues = simdgroup.contents().assumingMemoryBound(to: Float.self)
+            let mpsGraphValues = mpsGraph.contents().assumingMemoryBound(to: Float.self)
             for row in 0..<shape.rows {
                 for outputChannel in 0..<shape.outputs {
                     var expected = hasBias ? Float(bitPattern: UInt32(checkpointValues[
@@ -528,11 +538,14 @@ struct CheckpointTests {
                     #expect(abs(tiledValues[index] - expected) <= 5e-6)
                     #expect(abs(simdgroupValues[index] - expected) <= 5e-6)
                     #expect(abs(simdgroupValues[index] - tiledValues[index]) <= 5e-6)
+                    #expect(abs(mpsGraphValues[index] - expected) <= 5e-6)
+                    #expect(abs(mpsGraphValues[index] - tiledValues[index]) <= 5e-6)
                 }
             }
             for index in outputElements..<(outputElements + suffixElements) {
                 #expect(tiledValues[index] == canary)
                 #expect(simdgroupValues[index] == canary)
+                #expect(mpsGraphValues[index] == canary)
             }
         }
     }

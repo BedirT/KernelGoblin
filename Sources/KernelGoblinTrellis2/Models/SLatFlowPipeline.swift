@@ -35,7 +35,9 @@ public final class SLatFlowPipeline: @unchecked Sendable {
             context: context, parameters: parameters
         ).sampleF32(
             noise: noise, layout: layout, channels: 8,
-            trace: { step, state, _ in samplerTrace?(step, state) },
+            trace: samplerTrace.map { callback in
+                { step, state, _ in callback(step, state) }
+            },
             predictor: { state, modelTimestep, pass in
                 let conditioning = pass == .positive
                     ? positiveConditioning : negativeConditioning
@@ -70,7 +72,9 @@ public final class SLatFlowPipeline: @unchecked Sendable {
             context: context, parameters: parameters
         ).sampleF32(
             noise: noise, layout: layout, channels: 32,
-            trace: { step, state, _ in samplerTrace?(step, state) },
+            trace: samplerTrace.map { callback in
+                { step, state, _ in callback(step, state) }
+            },
             predictor: { state, modelTimestep, pass in
                 let timestep = try self.scalarBuffer(modelTimestep)
                 let conditioning = pass == .positive
@@ -111,7 +115,9 @@ public final class SLatFlowPipeline: @unchecked Sendable {
             context: context, parameters: parameters
         ).sampleF32(
             noise: noise, layout: layout, channels: 32,
-            trace: { step, state, _ in samplerTrace?(step, state) },
+            trace: samplerTrace.map { callback in
+                { step, state, _ in callback(step, state) }
+            },
             predictor: { state, modelTimestep, pass in
                 guard pass == .positive else {
                     throw NativeRuntimeError.invalidArgument(

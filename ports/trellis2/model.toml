@@ -134,9 +134,9 @@ minimum_macos = 14
 weight_lifecycle = "whole-stage mapped load, synchronized release"
 source_roots = ["Sources/KernelGoblinTrellis2", "Sources/KernelGoblinTrellis2CLI"]
 allowed_source_extensions = [".swift", ".metal"]
-forbidden_imports = ["PythonKit", "Torch", "LibTorch", "MetalPerformanceShaders", "MetalPerformanceShadersGraph"]
+forbidden_imports = ["PythonKit", "Torch", "LibTorch"]
 external_package_dependencies = []
-system_frameworks = ["CoreGraphics", "CoreVideo", "Foundation", "ImageIO", "Metal", "ModelIO", "UniformTypeIdentifiers", "Vision"]
+system_frameworks = ["CoreGraphics", "CoreVideo", "Foundation", "ImageIO", "Metal", "MetalPerformanceShadersGraph", "ModelIO", "UniformTypeIdentifiers", "Vision"]
 torch_policy = "oracle-only"
 
 [verification]
@@ -151,6 +151,14 @@ dense_simdgroup_ss_input_speedup = 1.25
 dense_simdgroup_cross_kv_speedup = 1.61
 dense_simdgroup_mlp_up_speedup = 1.65
 dense_simdgroup_conditioning_speedup = 0.94
+dense_mpsgraph_status = "verified-native-automatic-with-metal-fallback"
+dense_mpsgraph_minimum_macos = "15.2"
+dense_mpsgraph_benchmark_device = "Apple M3 Pro"
+dense_mpsgraph_benchmark_samples = 3
+dense_mpsgraph_cross_kv_speedup_over_tiled = 5.645
+dense_mpsgraph_mlp_up_speedup_over_tiled = 7.584
+dense_mpsgraph_one_step_output_bit_exact = true
+dense_mpsgraph_one_step_elapsed_seconds = 166.00
 dino_512_status = "verified-native-stage"
 dino_512_tokens = 1029
 dino_512_max_absolute_error = 0.000052928925

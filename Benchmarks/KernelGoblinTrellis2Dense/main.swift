@@ -29,7 +29,7 @@ enum DenseBenchmark {
         print("device=\(context.device.name)")
         print("os=\(ProcessInfo.processInfo.operatingSystemVersionString)")
         print("metal_language=3.0 warmup=\(warmup) iterations=\(iterations)")
-        print("timing=command creation + encode + commit + completion wait; allocations and validation excluded")
+        print("timing=dispatch + completion wait; graph construction, allocations, and validation excluded")
         for workload in workloads {
             try run(
                 workload, context: context, kernel: kernel,
@@ -69,6 +69,9 @@ enum DenseBenchmark {
         ), let simdOutput = context.device.makeBuffer(
             length: workload.rows * workload.outputChannels * MemoryLayout<Float>.stride,
             options: .storageModeShared
+        ), let mpsOutput = context.device.makeBuffer(
+            length: workload.rows * workload.outputChannels * MemoryLayout<Float>.stride,
+            options: .storageModeShared
         ) else {
             throw BenchmarkError.allocationFailed
         }
@@ -83,23 +86,49 @@ enum DenseBenchmark {
                 implementation: implementation
             )
         }
+        func invokeMPSGraph() throws {
+            try kernel.linearBF16WeightsF32Output(
+                input: inputBuffer,
+                checkpoint: checkpointBuffer,
+                weightOffset: 0,
+                biasOffset: workload.outputChannels * workload.inputChannels
+                    * MemoryLayout<UInt16>.stride,
+                rows: workload.rows,
+                inputChannels: workload.inputChannels,
+                outputChannels: workload.outputChannels,
+                output: mpsOutput,
+                implementation: .mpsGraph
+            )
+        }
         try invoke(.tiled, tiledOutput)
         try invoke(.simdgroupMatrix, simdOutput)
+        try invokeMPSGraph()
         let outputCount = workload.rows * workload.outputChannels
         let tiled = tiledOutput.contents().assumingMemoryBound(to: Float.self)
         let simd = simdOutput.contents().assumingMemoryBound(to: Float.self)
-        var squaredError = 0.0
+        let mps = mpsOutput.contents().assumingMemoryBound(to: Float.self)
+        var simdSquaredError = 0.0
+        var mpsSquaredError = 0.0
         var squaredReference = 0.0
-        var maximumError: Float = 0
+        var simdMaximumError: Float = 0
+        var mpsMaximumError: Float = 0
         for index in 0..<outputCount {
-            let error = simd[index] - tiled[index]
-            maximumError = max(maximumError, abs(error))
-            squaredError += Double(error) * Double(error)
+            let simdError = simd[index] - tiled[index]
+            let mpsError = mps[index] - tiled[index]
+            simdMaximumError = max(simdMaximumError, abs(simdError))
+            mpsMaximumError = max(mpsMaximumError, abs(mpsError))
+            simdSquaredError += Double(simdError) * Double(simdError)
+            mpsSquaredError += Double(mpsError) * Double(mpsError)
             squaredReference += Double(tiled[index]) * Double(tiled[index])
         }
-        let normalizedRMS = sqrt(squaredError / max(squaredReference, Double.leastNonzeroMagnitude))
-        guard normalizedRMS <= 5e-4 else {
-            throw BenchmarkError.conformanceFailed(workload.name, normalizedRMS)
+        let denominator = max(squaredReference, Double.leastNonzeroMagnitude)
+        let simdNormalizedRMS = sqrt(simdSquaredError / denominator)
+        let mpsNormalizedRMS = sqrt(mpsSquaredError / denominator)
+        guard simdNormalizedRMS <= 5e-4 else {
+            throw BenchmarkError.conformanceFailed(workload.name, "simdgroup", simdNormalizedRMS)
+        }
+        guard mpsNormalizedRMS <= 5e-4 else {
+            throw BenchmarkError.conformanceFailed(workload.name, "mpsgraph", mpsNormalizedRMS)
         }
         for row in [0, workload.rows / 2, workload.rows - 1] {
             for channel in [0, workload.outputChannels / 2, workload.outputChannels - 1] {
@@ -117,7 +146,8 @@ enum DenseBenchmark {
                 let errorBound = gamma / (1 - gamma) * absoluteProducts + 2e-6
                 let index = row * workload.outputChannels + channel
                 guard abs(tiled[index] - expected) <= errorBound,
-                      abs(simd[index] - expected) <= errorBound else {
+                      abs(simd[index] - expected) <= errorBound,
+                      abs(mps[index] - expected) <= errorBound else {
                     throw BenchmarkError.cpuReferenceFailed(workload.name, row, channel)
                 }
             }
@@ -125,30 +155,46 @@ enum DenseBenchmark {
         for _ in 0..<warmup {
             try invoke(.tiled, tiledOutput)
             try invoke(.simdgroupMatrix, simdOutput)
+            try invokeMPSGraph()
         }
         var tiledTimes: [Double] = []
         var simdTimes: [Double] = []
+        var mpsTimes: [Double] = []
         tiledTimes.reserveCapacity(iterations)
         simdTimes.reserveCapacity(iterations)
+        mpsTimes.reserveCapacity(iterations)
         for iteration in 0..<iterations {
-            let order: [(BF16LinearImplementation, MTLBuffer, Bool)] = iteration.isMultiple(of: 2)
-                ? [(.tiled, tiledOutput, true), (.simdgroupMatrix, simdOutput, false)]
-                : [(.simdgroupMatrix, simdOutput, false), (.tiled, tiledOutput, true)]
-            for (implementation, output, isTiled) in order {
+            let implementations: [(String, () throws -> Void)] = [
+                ("tiled", { try invoke(.tiled, tiledOutput) }),
+                ("simdgroup", { try invoke(.simdgroupMatrix, simdOutput) }),
+                ("mpsgraph", { try invokeMPSGraph() }),
+            ]
+            let offset = iteration % implementations.count
+            let order = Array(implementations[offset...]) + Array(implementations[..<offset])
+            for (name, invokeTimed) in order {
                 let start = DispatchTime.now().uptimeNanoseconds
-                try invoke(implementation, output)
+                try invokeTimed()
                 let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
-                if isTiled { tiledTimes.append(elapsed) } else { simdTimes.append(elapsed) }
+                switch name {
+                case "tiled": tiledTimes.append(elapsed)
+                case "simdgroup": simdTimes.append(elapsed)
+                default: mpsTimes.append(elapsed)
+                }
             }
         }
         print(
             "workload=\(workload.name) m=\(workload.rows) n=\(workload.outputChannels) " +
-            "k=\(workload.inputChannels) max_abs_diff=\(maximumError) " +
-            "normalized_rms=\(normalizedRMS)"
+            "k=\(workload.inputChannels) simd_max_abs_diff=\(simdMaximumError) " +
+            "simd_normalized_rms=\(simdNormalizedRMS) mps_max_abs_diff=\(mpsMaximumError) " +
+            "mps_normalized_rms=\(mpsNormalizedRMS)"
         )
         print(summary(name: "tiled", values: tiledTimes))
         print(summary(name: "simdgroup", values: simdTimes))
-        print(String(format: "speedup=%.3fx", median(tiledTimes) / median(simdTimes)))
+        print(summary(name: "mpsgraph", values: mpsTimes))
+        print(String(
+            format: "simdgroup_speedup=%.3fx mpsgraph_speedup=%.3fx",
+            median(tiledTimes) / median(simdTimes), median(tiledTimes) / median(mpsTimes)
+        ))
     }
 
     private static func summary(name: String, values: [Double]) -> String {
@@ -186,6 +232,6 @@ enum DenseBenchmark {
 private enum BenchmarkError: Error {
     case invalidArguments
     case allocationFailed
-    case conformanceFailed(String, Double)
+    case conformanceFailed(String, String, Double)
     case cpuReferenceFailed(String, Int, Int)
 }

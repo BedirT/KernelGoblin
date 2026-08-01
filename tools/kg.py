@@ -35,6 +35,7 @@ TRELLIS_NATIVE_IMPORTS = {
     "ImageIO",
     "KernelGoblinTrellis2",
     "Metal",
+    "MetalPerformanceShadersGraph",
     "ModelIO",
     "UniformTypeIdentifiers",
     "Vision",

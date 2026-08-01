@@ -4,6 +4,7 @@ public enum BF16LinearImplementation: Sendable {
     case automatic
     case tiled
     case simdgroupMatrix
+    case mpsGraph
 }
 
 public final class DenseKernel: @unchecked Sendable {
@@ -74,6 +75,7 @@ public final class DenseKernel: @unchecked Sendable {
     }
 
     public var supportsSIMDGroupMatrix: Bool { linearBF16SIMDGroupPipeline != nil }
+    public var supportsMPSGraph: Bool { context.mpsGraphDense.isSupported }
 
     public func linearF32(
         input: MTLBuffer,
@@ -110,6 +112,47 @@ public final class DenseKernel: @unchecked Sendable {
         output: MTLBuffer,
         implementation: BF16LinearImplementation = .automatic
     ) throws {
+        try validateLinear(
+            elementWidth: MemoryLayout<UInt16>.stride,
+            input: input,
+            checkpoint: checkpoint,
+            weightOffset: weightOffset,
+            biasOffset: biasOffset,
+            rows: rows,
+            inputChannels: inputChannels,
+            outputChannels: outputChannels,
+            output: output
+        )
+        let rowInputCount = rows.multipliedReportingOverflow(by: inputChannels)
+        let operationCount = rowInputCount.partialValue.multipliedReportingOverflow(
+            by: outputChannels
+        )
+        let useMPSGraph = supportsMPSGraph && (implementation == .mpsGraph
+            || (implementation == .automatic
+                && !operationCount.overflow
+                && !rowInputCount.overflow
+                && rows >= 8
+                && operationCount.partialValue >= 1_000_000))
+        if useMPSGraph {
+            if #available(macOS 15.2, *) {
+                try context.mpsGraphDense.run(
+                    input: input,
+                    checkpoint: checkpoint,
+                    weightOffset: weightOffset,
+                    biasOffset: biasOffset,
+                    rows: rows,
+                    inputChannels: inputChannels,
+                    outputChannels: outputChannels,
+                    output: output
+                )
+            }
+            return
+        }
+        if implementation == .mpsGraph {
+            throw NativeRuntimeError.invalidArgument(
+                "MPSGraph BF16 dense requires macOS 15.2 or newer"
+            )
+        }
         let selectedPipeline: MTLComputePipelineState
         let usesSIMDGroupMatrix: Bool
         switch implementation {
@@ -134,6 +177,8 @@ public final class DenseKernel: @unchecked Sendable {
             }
             selectedPipeline = linearBF16SIMDGroupPipeline
             usesSIMDGroupMatrix = true
+        case .mpsGraph:
+            fatalError("MPSGraph dispatch returned before Metal pipeline selection")
         }
         try linear(
             pipeline: selectedPipeline,
@@ -187,11 +232,71 @@ public final class DenseKernel: @unchecked Sendable {
         outputChannels: Int,
         output: MTLBuffer
     ) throws {
+        try validateLinear(
+            elementWidth: elementWidth,
+            input: input,
+            checkpoint: checkpoint,
+            weightOffset: weightOffset,
+            biasOffset: biasOffset,
+            rows: rows,
+            inputChannels: inputChannels,
+            outputChannels: outputChannels,
+            output: output,
+            tile: simdgroupMatrix ? 8 : Self.tileSize
+        )
+        var parameters = LinearF32Parameters(
+            weightOffset: UInt64(weightOffset),
+            biasOffset: UInt64(biasOffset ?? weightOffset),
+            rows: UInt32(rows),
+            inputChannels: UInt32(inputChannels),
+            outputChannels: UInt32(outputChannels),
+            hasBias: biasOffset == nil ? 0 : 1
+        )
+        try context.runCompute(label: "dense kernel") { encoder in
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(input, offset: 0, index: 0)
+            encoder.setBuffer(checkpoint, offset: 0, index: 1)
+            encoder.setBuffer(output, offset: 0, index: 2)
+            encoder.setBytes(
+                &parameters, length: MemoryLayout<LinearF32Parameters>.stride, index: 3
+            )
+            let tile = simdgroupMatrix ? 8 : Self.tileSize
+            let threads = simdgroupMatrix ? 32 : tile * tile
+            guard pipeline.maxTotalThreadsPerThreadgroup >= threads,
+                  !simdgroupMatrix || pipeline.threadExecutionWidth == 32 else {
+                throw NativeRuntimeError.invalidArgument(
+                    "Metal device cannot dispatch the required dense tile"
+                )
+            }
+            encoder.dispatchThreadgroups(
+                MTLSize(
+                    width: (outputChannels + tile - 1) / tile,
+                    height: (rows + tile - 1) / tile,
+                    depth: 1
+                ),
+                threadsPerThreadgroup: simdgroupMatrix
+                    ? MTLSize(width: threads, height: 1, depth: 1)
+                    : MTLSize(width: tile, height: tile, depth: 1)
+            )
+        }
+    }
+
+    private func validateLinear(
+        elementWidth: Int,
+        input: MTLBuffer,
+        checkpoint: MTLBuffer,
+        weightOffset: Int,
+        biasOffset: Int?,
+        rows: Int,
+        inputChannels: Int,
+        outputChannels: Int,
+        output: MTLBuffer,
+        tile: Int = 8
+    ) throws {
         guard rows > 0, inputChannels > 0, outputChannels > 0,
               weightOffset >= 0, biasOffset.map({ $0 >= 0 }) ?? true else {
             throw NativeRuntimeError.invalidArgument("linear dimensions and offsets must be positive")
         }
-        let tile = simdgroupMatrix ? 8 : Self.tileSize
         guard rows <= Int(UInt32.max),
               inputChannels <= Int(UInt32.max) - tile,
               outputChannels <= Int(UInt32.max),
@@ -215,40 +320,6 @@ public final class DenseKernel: @unchecked Sendable {
               biasOffset.map({ $0 % elementWidth == 0 }) ?? true
         else {
             throw NativeRuntimeError.invalidArgument("linear buffers or tensor alignment are invalid")
-        }
-        var parameters = LinearF32Parameters(
-            weightOffset: UInt64(weightOffset),
-            biasOffset: UInt64(biasOffset ?? weightOffset),
-            rows: UInt32(rows),
-            inputChannels: UInt32(inputChannels),
-            outputChannels: UInt32(outputChannels),
-            hasBias: biasOffset == nil ? 0 : 1
-        )
-        try context.runCompute(label: "dense kernel") { encoder in
-            encoder.setComputePipelineState(pipeline)
-            encoder.setBuffer(input, offset: 0, index: 0)
-            encoder.setBuffer(checkpoint, offset: 0, index: 1)
-            encoder.setBuffer(output, offset: 0, index: 2)
-            encoder.setBytes(
-                &parameters, length: MemoryLayout<LinearF32Parameters>.stride, index: 3
-            )
-            let threads = simdgroupMatrix ? 32 : tile * tile
-            guard pipeline.maxTotalThreadsPerThreadgroup >= threads,
-                  !simdgroupMatrix || pipeline.threadExecutionWidth == 32 else {
-                throw NativeRuntimeError.invalidArgument(
-                    "Metal device cannot dispatch the required dense tile"
-                )
-            }
-            encoder.dispatchThreadgroups(
-                MTLSize(
-                    width: (outputChannels + tile - 1) / tile,
-                    height: (rows + tile - 1) / tile,
-                    depth: 1
-                ),
-                threadsPerThreadgroup: simdgroupMatrix
-                    ? MTLSize(width: threads, height: 1, depth: 1)
-                    : MTLSize(width: tile, height: tile, depth: 1)
-            )
         }
     }
 }
