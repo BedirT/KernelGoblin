@@ -19,6 +19,13 @@ struct NativePipelineTests {
         #expect(all.allSatisfy {
             $0.revision.count == 40 && $0.sha256.count == 64 && $0.bytes > 0
         })
+        let home = URL(fileURLWithPath: "/tmp/kg-home", isDirectory: true)
+        let dino = all.first { $0.role == "dino" }!
+        #expect(Trellis2NativeInstaller.huggingFaceCacheURL(
+            for: dino, homeDirectory: home
+        ).path == "/tmp/kg-home/.cache/huggingface/hub/"
+            + "models--facebook--dinov3-vitl16-pretrain-lvd1689m/snapshots/"
+            + "ea8dc2863c51be0a264bab82070e3e8836b02d51/model.safetensors")
     }
 
     @Test("checkpoint resolver uses only pinned files")

@@ -146,26 +146,12 @@ public enum Trellis2NativeInstaller {
         try FileManager.default.createDirectory(
             at: root, withIntermediateDirectories: true
         )
-        let cached = try? Trellis2CheckpointSet.huggingFaceCache()
-        var cachedByRole: [String: URL] = cached.map {
-            [
-                "dino": $0.dino,
-                "sparse-structure-flow": $0.sparseStructureFlow,
-                "sparse-structure-decoder": $0.sparseStructureDecoder,
-                "shape-flow": $0.shapeFlow,
-                "texture-flow": $0.textureFlow,
-                "shape-decoder": $0.shapeDecoder,
-                "texture-decoder": $0.textureDecoder,
-            ]
-        } ?? [:]
-        let cachedShapeEncoder = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                ".cache/huggingface/hub/models--microsoft--TRELLIS.2-4B/snapshots"
-            )
-            .appendingPathComponent(NativeTrellis2Pipeline.trellisWeightsRevision)
-            .appendingPathComponent("ckpts/shape_enc_next_dc_f16c32_fp16.safetensors")
-        if FileManager.default.fileExists(atPath: cachedShapeEncoder.path) {
-            cachedByRole["shape-encoder"] = cachedShapeEncoder
+        var cachedByRole: [String: URL] = [:]
+        for component in components {
+            let candidate = huggingFaceCacheURL(for: component)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                cachedByRole[component.role] = candidate
+            }
         }
         let selected = components(for: feature)
         for component in selected {
@@ -256,6 +242,20 @@ public enum Trellis2NativeInstaller {
                     .contains($0.role)
             }
         }
+    }
+
+    static func huggingFaceCacheURL(
+        for component: NativeCheckpointComponent,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        let repositoryDirectory = "models--"
+            + component.repository.replacingOccurrences(of: "/", with: "--")
+        return homeDirectory
+            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+            .appendingPathComponent(repositoryDirectory, isDirectory: true)
+            .appendingPathComponent("snapshots", isDirectory: true)
+            .appendingPathComponent(component.revision, isDirectory: true)
+            .appendingPathComponent(component.path)
     }
 
     private static func installedURL(
