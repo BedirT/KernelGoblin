@@ -1,0 +1,150 @@
+import Foundation
+import Metal
+
+public final class NormalizationKernel: @unchecked Sendable {
+    private struct LayerNormParameters {
+        var weightOffset: UInt64
+        var biasOffset: UInt64
+        var rows: UInt32
+        var channels: UInt32
+        var hasAffine: UInt32
+        var epsilon: Float
+    }
+
+    private struct RMSNormParameters {
+        var gammaOffset: UInt64
+        var rows: UInt32
+        var heads: UInt32
+        var dimensions: UInt32
+        var epsilon: Float
+    }
+
+    private let context: MetalContext
+    private let layerNormPipeline: MTLComputePipelineState
+    private let rmsNormPipeline: MTLComputePipelineState
+
+    public init(context: MetalContext) throws {
+        self.context = context
+        let library = try context.library(named: "identity")
+        guard let layerNorm = library.makeFunction(name: "kg_layer_norm_f32"),
+              let rmsNorm = library.makeFunction(name: "kg_multihead_rms_norm_f32") else {
+            throw NativeRuntimeError.invalidArgument("normalization Metal functions are missing")
+        }
+        self.layerNormPipeline = try context.device.makeComputePipelineState(function: layerNorm)
+        self.rmsNormPipeline = try context.device.makeComputePipelineState(function: rmsNorm)
+    }
+
+    public func layerNormF32(
+        input: MTLBuffer, checkpoint: MTLBuffer, rows: Int, channels: Int,
+        weightOffset: Int? = nil, biasOffset: Int? = nil, epsilon: Float = 1e-6,
+        output: MTLBuffer
+    ) throws {
+        let affine = weightOffset != nil || biasOffset != nil
+        let affineBytes = try checkedByteCount(rows: 1, channels: channels, width: 2)
+        let weightEnd = try weightOffset.map { try checkedSum($0, affineBytes) }
+        let biasEnd = try biasOffset.map { try checkedSum($0, affineBytes) }
+        guard rows > 0, channels > 0, epsilon > 0,
+              rows <= Int(UInt32.max), channels <= Int(UInt32.max),
+              (!affine || (weightOffset != nil && biasOffset != nil)),
+              weightOffset.map({ $0 >= 0 && $0 % 2 == 0 }) ?? true,
+              biasOffset.map({ $0 >= 0 && $0 % 2 == 0 }) ?? true,
+              fitsBuffer(rows, channels, width: 4, buffer: input),
+              fitsBuffer(rows, channels, width: 4, buffer: output),
+              weightEnd.map({ checkpoint.length >= $0 }) ?? true,
+              biasEnd.map({ checkpoint.length >= $0 }) ?? true else {
+            throw NativeRuntimeError.invalidArgument("invalid LayerNorm buffers or dimensions")
+        }
+        var parameters = LayerNormParameters(
+            weightOffset: UInt64(weightOffset ?? 0), biasOffset: UInt64(biasOffset ?? 0),
+            rows: UInt32(rows), channels: UInt32(channels),
+            hasAffine: affine ? 1 : 0, epsilon: epsilon
+        )
+        try dispatch(
+            pipeline: layerNormPipeline, count: rows,
+            buffers: [(input, 0), (checkpoint, 1), (output, 2)], parameters: &parameters
+        )
+    }
+
+    public func multiheadRMSNormF32(
+        input: MTLBuffer, checkpoint: MTLBuffer, gammaOffset: Int,
+        rows: Int, heads: Int, dimensions: Int, epsilon: Float = 1e-12,
+        output: MTLBuffer
+    ) throws {
+        let groupCount = try checkedElementCount(rows, heads)
+        let gammaBytes = try checkedByteCount(rows: heads, channels: dimensions, width: 2)
+        let gammaEnd = try checkedSum(gammaOffset, gammaBytes)
+        guard rows > 0, heads > 0, dimensions > 0, epsilon > 0,
+              rows <= Int(UInt32.max), heads <= Int(UInt32.max),
+              dimensions <= Int(UInt32.max), gammaOffset >= 0, gammaOffset % 2 == 0,
+              groupCount <= Int(UInt32.max),
+              fitsBuffer(groupCount, dimensions, width: 4, buffer: input),
+              fitsBuffer(groupCount, dimensions, width: 4, buffer: output),
+              checkpoint.length >= gammaEnd else {
+            throw NativeRuntimeError.invalidArgument("invalid RMSNorm buffers or dimensions")
+        }
+        var parameters = RMSNormParameters(
+            gammaOffset: UInt64(gammaOffset), rows: UInt32(rows), heads: UInt32(heads),
+            dimensions: UInt32(dimensions), epsilon: epsilon
+        )
+        try dispatch(
+            pipeline: rmsNormPipeline, count: groupCount,
+            buffers: [(input, 0), (checkpoint, 1), (output, 2)], parameters: &parameters
+        )
+    }
+
+    private func dispatch<T>(
+        pipeline: MTLComputePipelineState, count: Int,
+        buffers: [(MTLBuffer, Int)], parameters: inout T
+    ) throws {
+        guard let command = context.queue.makeCommandBuffer(),
+              let encoder = command.makeComputeCommandEncoder() else {
+            throw NativeRuntimeError.allocationFailed("could not create normalization command")
+        }
+        encoder.setComputePipelineState(pipeline)
+        for (buffer, index) in buffers { encoder.setBuffer(buffer, offset: 0, index: index) }
+        let parameterData = withUnsafeBytes(of: &parameters) { Data($0) }
+        parameterData.withUnsafeBytes { raw in
+            encoder.setBytes(raw.baseAddress!, length: raw.count, index: 3)
+        }
+        let width = min(pipeline.maxTotalThreadsPerThreadgroup, 256)
+        encoder.dispatchThreads(
+            MTLSize(width: count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
+        )
+        encoder.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        if command.status == .error {
+            throw NativeRuntimeError.allocationFailed(
+                "Metal normalization failed: \(command.error?.localizedDescription ?? "unknown error")"
+            )
+        }
+    }
+}
+
+private func fitsBuffer(_ rows: Int, _ channels: Int, width: Int, buffer: MTLBuffer) -> Bool {
+    let elements = rows.multipliedReportingOverflow(by: channels)
+    let bytes = elements.partialValue.multipliedReportingOverflow(by: width)
+    return !elements.overflow && !bytes.overflow && buffer.length >= bytes.partialValue
+}
+
+private func checkedElementCount(_ lhs: Int, _ rhs: Int) throws -> Int {
+    let result = lhs.multipliedReportingOverflow(by: rhs)
+    guard !result.overflow else {
+        throw NativeRuntimeError.invalidArgument("normalization element count overflows Int")
+    }
+    return result.partialValue
+}
+
+private func checkedByteCount(rows: Int, channels: Int, width: Int) throws -> Int {
+    let elements = try checkedElementCount(rows, channels)
+    return try checkedElementCount(elements, width)
+}
+
+private func checkedSum(_ lhs: Int, _ rhs: Int) throws -> Int {
+    let result = lhs.addingReportingOverflow(rhs)
+    guard !result.overflow else {
+        throw NativeRuntimeError.invalidArgument("normalization byte range overflows Int")
+    }
+    return result.partialValue
+}

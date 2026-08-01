@@ -45,11 +45,12 @@ the checkpoint.
 | DINO q projection | Verified native slice | Hash-authenticated 1.21 GB checkpoint, F32 Metal/CPU differential |
 | TRELLIS shape input layer | Verified native slice | Hash-authenticated 2.58 GB checkpoint, BF16 weight decode, 26,112 outputs, zero BF16 bit mismatches |
 | TRELLIS timestep + shared adaLN | Verified native slice | Real Metal sinusoid, SiLU MLP, 9,216-channel modulation, zero BF16 bit mismatches |
+| TRELLIS block 0 core | Verified native slice | Two-token no-RoPE normalization, fused self/cross attention, 8,192-channel MLP, adaLN, and residual graph; `0.01475` RMS against pinned Torch BF16 fixture |
 | Morton coding | Verified native Metal | Bit-exact differential and randomized round trips |
 | UV raster | Verified analytic Metal slice | Physical render, analytic coverage/interpolation; nvdiffrast CUDA goldens pending |
 | PBR bake | Experimental reference | Synthetic component tests and GLB reload; upstream mesh semantics pending |
 | Existing-mesh texturing | In progress | Staged reference orchestration exists; complete artifact proof pending |
-| Full Swift + Metal model | In progress | One real model layer passes; complete stages remain |
+| Full Swift + Metal model | In progress | Conditioning, fused attention, and one real block core pass; required RoPE and complete stages remain |
 
 ## What The Reference Run Does
 
@@ -184,9 +185,9 @@ against pinned upstream outputs.
 
 ## Next Acceptance Gates
 
-1. Complete timestep embedding, F32 normalization, activation, RoPE, adaLN,
-   and one native TRELLIS cross-transformer block.
-2. Add fused attention and finish one 30-block shape-flow stage.
+1. Add 3D RoPE to the verified native cross-transformer block.
+2. Carry the block through one complete 30-block shape-flow stage with bounded
+   activation ownership.
 3. Implement sparse tensor topology, convolution, S2C/C2S, and decoder caches.
 4. Complete native DINO, sampler, VAE stages, and six-channel PBR decoding.
 5. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.

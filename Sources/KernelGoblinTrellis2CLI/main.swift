@@ -9,7 +9,7 @@ enum KernelGoblinTrellis2Command {
         guard arguments.count == 2 else {
             FileHandle.standardError.write(
                 Data(
-                    "usage: kg-trellis2 <inspect-checkpoint|verify-dino-linear|verify-slat-input-layer|verify-slat-conditioning> FILE.safetensors\n".utf8
+                    "usage: kg-trellis2 <inspect-checkpoint|verify-dino-linear|verify-slat-input-layer|verify-slat-conditioning|verify-slat-self-attention|verify-slat-cross-attention> FILE.safetensors\n".utf8
                 )
             )
             throw Exit.invalidArguments
@@ -21,6 +21,14 @@ enum KernelGoblinTrellis2Command {
         }
         if arguments[0] == "verify-slat-conditioning" {
             try verifySLatConditioning(url: url)
+            return
+        }
+        if arguments[0] == "verify-slat-self-attention" {
+            try verifySLatSelfAttention(url: url)
+            return
+        }
+        if arguments[0] == "verify-slat-cross-attention" {
+            try verifySLatCrossAttention(url: url)
             return
         }
         if arguments[0] == "verify-dino-linear" {
@@ -295,6 +303,171 @@ enum KernelGoblinTrellis2Command {
         print("bf16_bit_mismatches=\(mismatchedBF16)")
         print("checkpoint_mapping_bytes=\(checkpoint.mappedByteCount) heap_weight_copy_bytes=0")
     }
+
+    private static func verifySLatSelfAttention(url: URL) throws {
+        let expectedSHA256 = "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f"
+        let context = try MetalContext()
+        let checkpoint = try MappedCheckpoint(url: url, device: context.device)
+        let actualSHA256 = try checkpoint.sha256()
+        guard actualSHA256 == expectedSHA256 else {
+            throw Exit.checksumMismatch(expected: expectedSHA256, actual: actualSHA256)
+        }
+        let tokens = 2
+        let channels = SLatSelfAttention.channels
+        var inputValues = (0..<(tokens * channels)).map { index in
+            roundedBF16Value(Float(sin(Double(index) * 0.013) * 0.35))
+        }
+        let input = try makeBuffer(context, values: &inputValues)
+        let actualBuffer = try SLatSelfAttention(context: context).forwardF32(
+            input: input, checkpoint: checkpoint, block: 0, tokens: tokens
+        )
+
+        let mapped = checkpoint.buffer.contents()
+        let qkvWeight = try checkpoint.descriptor(named: "blocks.0.self_attn.to_qkv.weight")
+        let qkvBias = try checkpoint.descriptor(named: "blocks.0.self_attn.to_qkv.bias")
+        var qkv = cpuLinearBF16Rows(
+            input: inputValues, rows: tokens, inputChannels: channels,
+            mapped: mapped, weightOffset: Int(qkvWeight.fileOffset),
+            biasOffset: Int(qkvBias.fileOffset), outputs: channels * 3
+        ).map(roundedBF16Value)
+        var query = [Float](repeating: 0, count: tokens * channels)
+        var key = query
+        var value = query
+        for token in 0..<tokens {
+            let source = token * channels * 3
+            let destination = token * channels
+            query.replaceSubrange(destination..<(destination + channels), with: qkv[source..<(source + channels)])
+            key.replaceSubrange(destination..<(destination + channels), with: qkv[(source + channels)..<(source + channels * 2)])
+            value.replaceSubrange(destination..<(destination + channels), with: qkv[(source + channels * 2)..<(source + channels * 3)])
+        }
+        qkv.removeAll(keepingCapacity: false)
+        query = cpuRMSNorm(
+            query, rows: tokens, heads: 12, dimensions: 128, mapped: mapped,
+            gammaOffset: Int(try checkpoint.descriptor(
+                named: "blocks.0.self_attn.q_rms_norm.gamma"
+            ).fileOffset)
+        ).map(roundedBF16Value)
+        key = cpuRMSNorm(
+            key, rows: tokens, heads: 12, dimensions: 128, mapped: mapped,
+            gammaOffset: Int(try checkpoint.descriptor(
+                named: "blocks.0.self_attn.k_rms_norm.gamma"
+            ).fileOffset)
+        ).map(roundedBF16Value)
+        var expected = cpuAttention(
+            query: query, key: key, value: value,
+            queryCount: tokens, keyCount: tokens, heads: 12, dimensions: 128
+        ).map(roundedBF16Value)
+        let outWeight = try checkpoint.descriptor(named: "blocks.0.self_attn.to_out.weight")
+        let outBias = try checkpoint.descriptor(named: "blocks.0.self_attn.to_out.bias")
+        expected = cpuLinearBF16Rows(
+            input: expected, rows: tokens, inputChannels: channels,
+            mapped: mapped, weightOffset: Int(outWeight.fileOffset),
+            biasOffset: Int(outBias.fileOffset), outputs: channels
+        ).map(roundedBF16Value)
+
+        let actual = actualBuffer.contents().assumingMemoryBound(to: Float.self)
+        var maximumAbsoluteError: Float = 0
+        var mismatchedBF16 = 0
+        for index in expected.indices {
+            maximumAbsoluteError = max(maximumAbsoluteError, abs(actual[index] - expected[index]))
+            if actual[index].bitPattern != expected[index].bitPattern { mismatchedBF16 += 1 }
+        }
+        guard mismatchedBF16 == 0 else {
+            throw Exit.slatConformanceFailed(maximumAbsoluteError, 0, mismatchedBF16)
+        }
+        print("PASS: real TRELLIS.2 block.0 fused self-attention dispatched on \(context.device.name)")
+        print("source=microsoft/TRELLIS.2-4B revision=af44b45f2e35a493886929c6d786e563ec68364d")
+        print("sha256=\(actualSHA256) tokens=\(tokens) heads=12 head_dimensions=128")
+        print("max_abs_error=\(maximumAbsoluteError) bf16_bit_mismatches=\(mismatchedBF16)")
+        print("attention_score_matrix_bytes=0 checkpoint_mapping_bytes=\(checkpoint.mappedByteCount)")
+    }
+
+    private static func verifySLatCrossAttention(url: URL) throws {
+        let expectedSHA256 = "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f"
+        let context = try MetalContext()
+        let checkpoint = try MappedCheckpoint(url: url, device: context.device)
+        let actualSHA256 = try checkpoint.sha256()
+        guard actualSHA256 == expectedSHA256 else {
+            throw Exit.checksumMismatch(expected: expectedSHA256, actual: actualSHA256)
+        }
+        let tokens = 2, conditioningTokens = 3
+        let channels = SLatCrossAttention.channels
+        let conditioningChannels = SLatCrossAttention.contextChannels
+        var inputValues = (0..<(tokens * channels)).map { index in
+            roundedBF16Value(Float(cos(Double(index) * 0.009) * 0.3))
+        }
+        var conditioningValues = (0..<(conditioningTokens * conditioningChannels)).map { index in
+            roundedBF16Value(Float(sin(Double(index) * 0.015) * 0.25))
+        }
+        let input = try makeBuffer(context, values: &inputValues)
+        let conditioning = try makeBuffer(context, values: &conditioningValues)
+        let actualBuffer = try SLatCrossAttention(context: context).forwardF32(
+            input: input, conditioning: conditioning, checkpoint: checkpoint,
+            block: 0, tokens: tokens, conditioningTokens: conditioningTokens
+        )
+
+        let mapped = checkpoint.buffer.contents()
+        let prefix = "blocks.0.cross_attn"
+        let qWeight = try checkpoint.descriptor(named: "\(prefix).to_q.weight")
+        let qBias = try checkpoint.descriptor(named: "\(prefix).to_q.bias")
+        var query = cpuLinearBF16Rows(
+            input: inputValues, rows: tokens, inputChannels: channels,
+            mapped: mapped, weightOffset: Int(qWeight.fileOffset),
+            biasOffset: Int(qBias.fileOffset), outputs: channels
+        ).map(roundedBF16Value)
+        let kvWeight = try checkpoint.descriptor(named: "\(prefix).to_kv.weight")
+        let kvBias = try checkpoint.descriptor(named: "\(prefix).to_kv.bias")
+        var packedKV = cpuLinearBF16Rows(
+            input: conditioningValues, rows: conditioningTokens,
+            inputChannels: conditioningChannels, mapped: mapped,
+            weightOffset: Int(kvWeight.fileOffset), biasOffset: Int(kvBias.fileOffset),
+            outputs: channels * 2
+        ).map(roundedBF16Value)
+        var key = [Float](repeating: 0, count: conditioningTokens * channels)
+        var value = key
+        for token in 0..<conditioningTokens {
+            let source = token * channels * 2
+            let destination = token * channels
+            key.replaceSubrange(destination..<(destination + channels), with: packedKV[source..<(source + channels)])
+            value.replaceSubrange(destination..<(destination + channels), with: packedKV[(source + channels)..<(source + channels * 2)])
+        }
+        packedKV.removeAll(keepingCapacity: false)
+        query = cpuRMSNorm(
+            query, rows: tokens, heads: 12, dimensions: 128, mapped: mapped,
+            gammaOffset: Int(try checkpoint.descriptor(named: "\(prefix).q_rms_norm.gamma").fileOffset)
+        ).map(roundedBF16Value)
+        key = cpuRMSNorm(
+            key, rows: conditioningTokens, heads: 12, dimensions: 128, mapped: mapped,
+            gammaOffset: Int(try checkpoint.descriptor(named: "\(prefix).k_rms_norm.gamma").fileOffset)
+        ).map(roundedBF16Value)
+        var expected = cpuAttention(
+            query: query, key: key, value: value,
+            queryCount: tokens, keyCount: conditioningTokens,
+            heads: 12, dimensions: 128
+        ).map(roundedBF16Value)
+        let outWeight = try checkpoint.descriptor(named: "\(prefix).to_out.weight")
+        let outBias = try checkpoint.descriptor(named: "\(prefix).to_out.bias")
+        expected = cpuLinearBF16Rows(
+            input: expected, rows: tokens, inputChannels: channels,
+            mapped: mapped, weightOffset: Int(outWeight.fileOffset),
+            biasOffset: Int(outBias.fileOffset), outputs: channels
+        ).map(roundedBF16Value)
+        let actual = actualBuffer.contents().assumingMemoryBound(to: Float.self)
+        var maximumAbsoluteError: Float = 0
+        var mismatchedBF16 = 0
+        for index in expected.indices {
+            maximumAbsoluteError = max(maximumAbsoluteError, abs(actual[index] - expected[index]))
+            if actual[index].bitPattern != expected[index].bitPattern { mismatchedBF16 += 1 }
+        }
+        guard mismatchedBF16 == 0 else {
+            throw Exit.slatConformanceFailed(maximumAbsoluteError, 0, mismatchedBF16)
+        }
+        print("PASS: real TRELLIS.2 block.0 fused cross-attention dispatched on \(context.device.name)")
+        print("source=microsoft/TRELLIS.2-4B revision=af44b45f2e35a493886929c6d786e563ec68364d")
+        print("sha256=\(actualSHA256) queries=\(tokens) context_tokens=\(conditioningTokens)")
+        print("heads=12 head_dimensions=128 max_abs_error=\(maximumAbsoluteError)")
+        print("bf16_bit_mismatches=\(mismatchedBF16) attention_score_matrix_bytes=0")
+    }
 }
 
 enum Exit: Error {
@@ -362,4 +535,82 @@ private func cpuLinearBF16(
         }
         return value
     }
+}
+
+private func cpuLinearBF16Rows(
+    input: [Float], rows: Int, inputChannels: Int, mapped: UnsafeMutableRawPointer,
+    weightOffset: Int, biasOffset: Int, outputs: Int
+) -> [Float] {
+    var result = [Float]()
+    result.reserveCapacity(rows * outputs)
+    for row in 0..<rows {
+        result.append(contentsOf: cpuLinearBF16(
+            input: Array(input[(row * inputChannels)..<((row + 1) * inputChannels)]),
+            mapped: mapped, weightOffset: weightOffset,
+            biasOffset: biasOffset, outputs: outputs
+        ))
+    }
+    return result
+}
+
+private func roundedBF16Value(_ value: Float) -> Float {
+    floatFromBF16(roundedBF16(value))
+}
+
+private func cpuRMSNorm(
+    _ input: [Float], rows: Int, heads: Int, dimensions: Int,
+    mapped: UnsafeMutableRawPointer, gammaOffset: Int
+) -> [Float] {
+    let gamma = mapped.advanced(by: gammaOffset).assumingMemoryBound(to: UInt16.self)
+    var output = [Float](repeating: 0, count: input.count)
+    for row in 0..<rows {
+        for head in 0..<heads {
+            let base = (row * heads + head) * dimensions
+            var squaredSum: Float = 0
+            for dimension in 0..<dimensions {
+                squaredSum.addProduct(input[base + dimension], input[base + dimension])
+            }
+            let inverse = 1 / sqrt(max(squaredSum, 1e-12))
+            for dimension in 0..<dimensions {
+                output[base + dimension] = input[base + dimension] * inverse
+                    * floatFromBF16(gamma[head * dimensions + dimension])
+                    * sqrt(Float(dimensions))
+            }
+        }
+    }
+    return output
+}
+
+private func cpuAttention(
+    query: [Float], key: [Float], value: [Float],
+    queryCount: Int, keyCount: Int, heads: Int, dimensions: Int
+) -> [Float] {
+    var output = [Float](repeating: 0, count: query.count)
+    let scale = 1 / sqrt(Float(dimensions))
+    for queryIndex in 0..<queryCount {
+        for head in 0..<heads {
+            let queryBase = (queryIndex * heads + head) * dimensions
+            var scores = [Float](repeating: 0, count: keyCount)
+            for keyIndex in 0..<keyCount {
+                let keyBase = (keyIndex * heads + head) * dimensions
+                for dimension in 0..<dimensions {
+                    scores[keyIndex].addProduct(
+                        query[queryBase + dimension], key[keyBase + dimension]
+                    )
+                }
+                scores[keyIndex] *= scale
+            }
+            let maximum = scores.max()!
+            let weights = scores.map { exp($0 - maximum) }
+            let denominator = weights.reduce(0, +)
+            for dimension in 0..<dimensions {
+                for keyIndex in 0..<keyCount {
+                    let keyBase = (keyIndex * heads + head) * dimensions
+                    output[queryBase + dimension] +=
+                        weights[keyIndex] / denominator * value[keyBase + dimension]
+                }
+            }
+        }
+    }
+    return output
 }

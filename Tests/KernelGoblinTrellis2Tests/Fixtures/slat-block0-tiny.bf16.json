@@ -1,0 +1,75 @@
+{
+  "format": "KernelGoblin TRELLIS.2 SLat block BF16 oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "weight_revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+  "weight_sha256": "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f",
+  "block": 0,
+  "batch_count": 1,
+  "tokens": 2,
+  "context_tokens": 2,
+  "channels": 1536,
+  "context_channels": 1024,
+  "use_rope": false,
+  "input_formula": "bf16(sin(i * 0.013) * 0.35)",
+  "modulation_formula": "bf16(sin(i * 0.007) * 0.2)",
+  "context_formula": "bf16(sin(i * 0.015) * 0.25)",
+  "output_bytes": 6144,
+  "output_sha256": "6c33a91ee7588407ef84926d42cf5181127126e72640b1fc71d0e4ae68dbb857",
+  "trace_file": "slat-block0-tiny.bf16.trace",
+  "trace_sha256": "6316473db08d5cd5aac341685b5e6066cd4a6c79d4841c915a810a40fafdc2ef",
+  "trace_offsets": {
+    "norm1": [
+      0,
+      6144
+    ],
+    "self_input": [
+      6144,
+      12288
+    ],
+    "self_output": [
+      12288,
+      18432
+    ],
+    "after_self": [
+      18432,
+      24576
+    ],
+    "norm2": [
+      24576,
+      30720
+    ],
+    "cross_output": [
+      30720,
+      36864
+    ],
+    "after_cross": [
+      36864,
+      43008
+    ],
+    "norm3": [
+      43008,
+      49152
+    ],
+    "mlp_input": [
+      49152,
+      55296
+    ],
+    "mlp_hidden_linear": [
+      55296,
+      88064
+    ],
+    "mlp_hidden_gelu": [
+      88064,
+      120832
+    ],
+    "mlp_output": [
+      120832,
+      126976
+    ],
+    "output": [
+      126976,
+      133120
+    ]
+  },
+  "oracle": "pinned Torch CPU ModulatedSparseTransformerCrossBlock"
+}

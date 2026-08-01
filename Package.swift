@@ -22,7 +22,8 @@ let package = Package(
         .testTarget(
             name: "KernelGoblinTrellis2Tests",
             dependencies: ["KernelGoblinTrellis2"],
-            path: "Tests/KernelGoblinTrellis2Tests"
+            path: "Tests/KernelGoblinTrellis2Tests",
+            resources: [.copy("Fixtures")]
         ),
     ]
 )

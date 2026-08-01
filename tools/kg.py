@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 import re
 import shutil
@@ -35,9 +36,9 @@ def kernel(value: str) -> dict:
         raise SystemExit(f"unknown kernel {value!r}; available: {choices}")
 
 
-def run(command: list[str]) -> None:
+def run(command: list[str], *, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(command), flush=True)
-    subprocess.run(command, cwd=ROOT, check=True)
+    subprocess.run(command, cwd=ROOT, check=True, env=env)
 
 
 def require_backend(manifest: dict) -> None:
@@ -188,7 +189,20 @@ def command_model_native_setup(args: argparse.Namespace) -> None:
 def command_model_native_test(args: argparse.Namespace) -> None:
     if args.model != "trellis2":
         raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
-    run(["swift", "test", "--parallel"])
+    checkpoint = Path(args.checkpoint).expanduser() if args.checkpoint else (
+        Path.home() / ".cache" / "huggingface" / "hub"
+        / "models--microsoft--TRELLIS.2-4B" / "snapshots"
+        / "af44b45f2e35a493886929c6d786e563ec68364d" / "ckpts"
+        / "slat_flow_img2shape_dit_1_3B_512_bf16.safetensors"
+    )
+    if not checkpoint.is_file():
+        raise SystemExit(
+            "native TRELLIS.2 conformance requires the pinned shape-flow checkpoint; "
+            "pass --checkpoint FILE.safetensors"
+        )
+    environment = os.environ.copy()
+    environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"] = str(checkpoint)
+    run(["swift", "test", "--parallel"], env=environment)
 
 
 def command_model_test(args: argparse.Namespace) -> None:
@@ -264,6 +278,8 @@ def parser() -> argparse.ArgumentParser:
     ):
         sub = model_commands.add_parser(name, help=help_text)
         sub.add_argument("model")
+        if name == "native-test":
+            sub.add_argument("--checkpoint")
         sub.set_defaults(func=function)
     model_run = model_commands.add_parser("run", help="run real model inference")
     model_run.add_argument("model")
