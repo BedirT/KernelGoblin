@@ -385,24 +385,10 @@ public final class NativeTrellis2Pipeline: @unchecked Sendable {
         }
         stageEvidence.append(dino.evidence)
 
-        var encoderInputValues: [Float] = []
-        encoderInputValues.reserveCapacity(
-            try checkedElements(voxelization.coordinates.count, 6)
+        let encoderMeshInput = try voxelization.shapeEncoderInput(
+            spatialShape: SparseSpatialShape(cubic: 512)
         )
-        for index in voxelization.coordinates.indices {
-            let coordinate = voxelization.coordinates[index]
-            let offset = voxelization.dualVertices[index] * 512
-                - SIMD3<Float>(Float(coordinate.x), Float(coordinate.y), Float(coordinate.z))
-                - SIMD3<Float>(repeating: 0.5)
-            let flags = voxelization.intersections[index]
-            encoderInputValues.append(contentsOf: [
-                offset.x, offset.y, offset.z,
-                Float(flags.x) - 0.5, Float(flags.y) - 0.5, Float(flags.z) - 0.5,
-            ])
-        }
-        let encoderCoordinates = voxelization.coordinates.map {
-            SparseStructureCoordinate(x: $0.x, y: $0.y, z: $0.z)
-        }
+        var encoderInputValues = encoderMeshInput.values
         guard let encoderInput = dino.value.conditioning.device.makeBuffer(
             bytes: &encoderInputValues,
             length: encoderInputValues.count * MemoryLayout<Float>.stride,
@@ -418,8 +404,8 @@ public final class NativeTrellis2Pipeline: @unchecked Sendable {
         ) { session in
             try requireSameDevice(session.device, [encoderInput])
             return try session.encodeShapeF32(
-                input: encoderInput, coordinates: encoderCoordinates,
-                spatialShape: SparseSpatialShape(cubic: 512)
+                input: encoderInput, coordinates: encoderMeshInput.coordinates,
+                spatialShape: encoderMeshInput.spatialShape
             )
         }
         stageEvidence.append(encoded.evidence)

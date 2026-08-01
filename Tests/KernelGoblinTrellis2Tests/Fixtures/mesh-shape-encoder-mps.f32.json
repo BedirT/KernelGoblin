@@ -1,0 +1,317 @@
+{
+  "format": "KernelGoblin mesh to sparse shape encoder MPS oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "checkpoint_sha256": "f37c5ff5b983b68e9946060000f09bc131f3e84318a2c8b7430a81e4b4636c41",
+  "torch_version": "2.13.0",
+  "device": "mps",
+  "pytorch_enable_mps_fallback": "0",
+  "oracle_call": "O-Voxel CPU then FlexiDualGridVaeEncoder.forward on MPS",
+  "grid_size": [
+    512,
+    512,
+    512
+  ],
+  "aabb": [
+    [
+      -0.5,
+      -0.5,
+      -0.5
+    ],
+    [
+      0.5,
+      0.5,
+      0.5
+    ]
+  ],
+  "faces": [
+    [
+      0,
+      2,
+      1
+    ],
+    [
+      0,
+      1,
+      3
+    ],
+    [
+      0,
+      3,
+      2
+    ],
+    [
+      1,
+      2,
+      3
+    ]
+  ],
+  "voxel_coordinates": [
+    [
+      250,
+      250,
+      250
+    ],
+    [
+      250,
+      251,
+      250
+    ],
+    [
+      251,
+      250,
+      250
+    ],
+    [
+      251,
+      251,
+      250
+    ],
+    [
+      250,
+      250,
+      251
+    ],
+    [
+      251,
+      250,
+      251
+    ],
+    [
+      250,
+      251,
+      251
+    ]
+  ],
+  "intersections": [
+    [
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0
+    ]
+  ],
+  "output_coordinates": [
+    [
+      0,
+      15,
+      15,
+      15
+    ]
+  ],
+  "guides_coarsest_to_finest": [
+    {
+      "fine_coordinates": [
+        [
+          0,
+          31,
+          31,
+          31
+        ]
+      ],
+      "coarse_coordinates": [
+        [
+          0,
+          15,
+          15,
+          15
+        ]
+      ],
+      "parent_indices": [
+        0
+      ],
+      "child_indices": [
+        7
+      ]
+    },
+    {
+      "fine_coordinates": [
+        [
+          0,
+          62,
+          62,
+          62
+        ]
+      ],
+      "coarse_coordinates": [
+        [
+          0,
+          31,
+          31,
+          31
+        ]
+      ],
+      "parent_indices": [
+        0
+      ],
+      "child_indices": [
+        0
+      ]
+    },
+    {
+      "fine_coordinates": [
+        [
+          0,
+          125,
+          125,
+          125
+        ]
+      ],
+      "coarse_coordinates": [
+        [
+          0,
+          62,
+          62,
+          62
+        ]
+      ],
+      "parent_indices": [
+        0
+      ],
+      "child_indices": [
+        7
+      ]
+    },
+    {
+      "fine_coordinates": [
+        [
+          0,
+          250,
+          250,
+          250
+        ],
+        [
+          0,
+          250,
+          251,
+          250
+        ],
+        [
+          0,
+          251,
+          250,
+          250
+        ],
+        [
+          0,
+          251,
+          251,
+          250
+        ],
+        [
+          0,
+          250,
+          250,
+          251
+        ],
+        [
+          0,
+          251,
+          250,
+          251
+        ],
+        [
+          0,
+          250,
+          251,
+          251
+        ]
+      ],
+      "coarse_coordinates": [
+        [
+          0,
+          125,
+          125,
+          125
+        ]
+      ],
+      "parent_indices": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "child_indices": [
+        0,
+        2,
+        1,
+        3,
+        4,
+        5,
+        6
+      ]
+    }
+  ],
+  "trace_layout": {
+    "mesh_vertices": {
+      "offset_f32": 0,
+      "shape": [
+        4,
+        3
+      ]
+    },
+    "dual_vertices": {
+      "offset_f32": 12,
+      "shape": [
+        7,
+        3
+      ]
+    },
+    "centered_input": {
+      "offset_f32": 33,
+      "shape": [
+        7,
+        6
+      ]
+    },
+    "latent": {
+      "offset_f32": 75,
+      "shape": [
+        1,
+        32
+      ]
+    }
+  },
+  "source_sha256": {
+    "ovoxel": "95ebcdec3818539c52504cd4a89f409287afc51b051086b9092e11fc7308063f",
+    "pipeline": "100d9b91aea42e235dd19c20a59abdfd526378ca1dea13a8c7b528c8db4cdfe3",
+    "fdg_encoder": "9e082e783ae86174ca2671ae33b6a1134a980fcbea8f168fa35a6800d19eebcb",
+    "sparse_encoder": "aeb41237d1c93cf3a666870c3d18e7044ba420a4e7a29aad5795bb5204731a00",
+    "spatial2channel": "4c0cd556548e3f1006f24a6db7490d10de284e6457898ebc23cce059bc3bf8e7",
+    "mps_overlay": "02c77f172289d58c193d70a915f755b12088d6a00294f58ab70d9794a7f7ede6",
+    "cpu_extension": "188d41770c623c479d26b5f465bf25657e71a9341cb42d4069bcd6bdc9cb5724",
+    "cpu_binding": "d8f89d24044c77b3f9a569e601c804ce5ca25ad78cac79f4651b841c02fd760e"
+  },
+  "payload_sha256": "952050a4ffe810aadd224f0bd3ee8045803484c1acb741e563539b6bd45aad55"
+}

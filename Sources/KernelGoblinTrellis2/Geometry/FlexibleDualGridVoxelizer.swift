@@ -18,6 +18,47 @@ public struct FlexibleDualGridVoxelization: Equatable, Sendable {
             )
         }
     }
+
+    public func shapeEncoderInput(
+        spatialShape: SparseSpatialShape
+    ) throws -> ShapeEncoderMeshInput {
+        guard coordinates.count == dualVertices.count,
+              coordinates.count == intersections.count,
+              !coordinates.isEmpty else {
+            throw NativeRuntimeError.invalidArgument(
+                "invalid flexible dual-grid shape encoder handoff"
+            )
+        }
+        let sparseCoordinates = coordinates.map {
+            SparseStructureCoordinate(x: $0.x, y: $0.y, z: $0.z)
+        }
+        _ = try SparseNeighborhood3x3(
+            coordinates: sparseCoordinates, spatialShape: spatialShape
+        )
+        let offsets = dualOffsets()
+        var values: [Float] = []
+        values.reserveCapacity(coordinates.count * 6)
+        for index in coordinates.indices {
+            let offset = offsets[index] - SIMD3<Float>(repeating: 0.5)
+            let flags = intersections[index]
+            values.append(contentsOf: [
+                offset.x, offset.y, offset.z,
+                Float(flags.x) - 0.5,
+                Float(flags.y) - 0.5,
+                Float(flags.z) - 0.5,
+            ])
+        }
+        return ShapeEncoderMeshInput(
+            values: values, coordinates: sparseCoordinates,
+            spatialShape: spatialShape
+        )
+    }
+}
+
+public struct ShapeEncoderMeshInput: Equatable, Sendable {
+    public let values: [Float]
+    public let coordinates: [SparseStructureCoordinate]
+    public let spatialShape: SparseSpatialShape
 }
 
 public enum FlexibleDualGridVoxelizer {
