@@ -307,6 +307,16 @@ def native_trellis_executable() -> Path:
     return Path(result.stdout.strip()) / "kg-trellis2"
 
 
+def native_trellis_install_root(value: str | None = None) -> Path:
+    if value:
+        return Path(value).expanduser().resolve()
+    return Path.home() / "Library" / "Application Support" / "KernelGoblin" / "trellis2-512"
+
+
+def first_checkpoint(*candidates: Path) -> Path:
+    return next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
+
+
 def command_model_setup(args: argparse.Namespace) -> None:
     if args.model != "trellis2":
         raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
@@ -327,11 +337,15 @@ def command_model_native_setup(args: argparse.Namespace) -> None:
 def command_model_native_test(args: argparse.Namespace) -> None:
     if args.model != "trellis2":
         raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
-    checkpoint = Path(args.checkpoint).expanduser().resolve() if args.checkpoint else (
-        Path.home() / ".cache" / "huggingface" / "hub"
-        / "models--microsoft--TRELLIS.2-4B" / "snapshots"
+    install_root = native_trellis_install_root(args.checkpoint_root)
+    hub = Path.home() / ".cache" / "huggingface" / "hub"
+    trellis_cache = (
+        hub / "models--microsoft--TRELLIS.2-4B" / "snapshots"
         / "af44b45f2e35a493886929c6d786e563ec68364d" / "ckpts"
-        / "slat_flow_img2shape_dit_1_3B_512_bf16.safetensors"
+    )
+    checkpoint = Path(args.checkpoint).expanduser().resolve() if args.checkpoint else first_checkpoint(
+        install_root / "shape-flow/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors",
+        trellis_cache / "slat_flow_img2shape_dit_1_3B_512_bf16.safetensors",
     )
     if not checkpoint.is_file():
         raise SystemExit(
@@ -339,9 +353,9 @@ def command_model_native_test(args: argparse.Namespace) -> None:
             "pass --checkpoint FILE.safetensors"
         )
     texture_checkpoint = (
-        Path(args.texture_checkpoint).expanduser().resolve() if args.texture_checkpoint else (
-            checkpoint.parent
-            / "slat_flow_imgshape2tex_dit_1_3B_512_bf16.safetensors"
+        Path(args.texture_checkpoint).expanduser().resolve() if args.texture_checkpoint else first_checkpoint(
+            install_root / "texture-flow/slat_flow_imgshape2tex_dit_1_3B_512_bf16.safetensors",
+            checkpoint.parent / "slat_flow_imgshape2tex_dit_1_3B_512_bf16.safetensors",
         )
     )
     if not texture_checkpoint.is_file():
@@ -351,8 +365,9 @@ def command_model_native_test(args: argparse.Namespace) -> None:
         )
     sparse_structure_checkpoint = (
         Path(args.sparse_structure_checkpoint).expanduser().resolve()
-        if args.sparse_structure_checkpoint else (
-            checkpoint.parent / "ss_flow_img_dit_1_3B_64_bf16.safetensors"
+        if args.sparse_structure_checkpoint else first_checkpoint(
+            install_root / "sparse-structure-flow/ss_flow_img_dit_1_3B_64_bf16.safetensors",
+            checkpoint.parent / "ss_flow_img_dit_1_3B_64_bf16.safetensors",
         )
     )
     if not sparse_structure_checkpoint.is_file():
@@ -362,11 +377,11 @@ def command_model_native_test(args: argparse.Namespace) -> None:
         )
     sparse_structure_decoder_checkpoint = (
         Path(args.sparse_structure_decoder_checkpoint).expanduser().resolve()
-        if args.sparse_structure_decoder_checkpoint else (
-            Path.home() / ".cache" / "huggingface" / "hub"
-            / "models--microsoft--TRELLIS-image-large" / "snapshots"
+        if args.sparse_structure_decoder_checkpoint else first_checkpoint(
+            install_root / "sparse-structure-decoder/ss_dec_conv3d_16l8_fp16.safetensors",
+            hub / "models--microsoft--TRELLIS-image-large" / "snapshots"
             / "25e0d31ffbebe4b5a97464dd851910efc3002d96" / "ckpts"
-            / "ss_dec_conv3d_16l8_fp16.safetensors"
+            / "ss_dec_conv3d_16l8_fp16.safetensors",
         )
     )
     if not sparse_structure_decoder_checkpoint.is_file():
@@ -376,8 +391,9 @@ def command_model_native_test(args: argparse.Namespace) -> None:
         )
     shape_decoder_checkpoint = (
         Path(args.shape_decoder_checkpoint).expanduser().resolve()
-        if args.shape_decoder_checkpoint else (
-            checkpoint.parent / "shape_dec_next_dc_f16c32_fp16.safetensors"
+        if args.shape_decoder_checkpoint else first_checkpoint(
+            install_root / "shape-decoder/shape_dec_next_dc_f16c32_fp16.safetensors",
+            checkpoint.parent / "shape_dec_next_dc_f16c32_fp16.safetensors",
         )
     )
     if not shape_decoder_checkpoint.is_file():
@@ -387,8 +403,9 @@ def command_model_native_test(args: argparse.Namespace) -> None:
         )
     texture_decoder_checkpoint = (
         Path(args.texture_decoder_checkpoint).expanduser().resolve()
-        if args.texture_decoder_checkpoint else (
-            checkpoint.parent / "tex_dec_next_dc_f16c32_fp16.safetensors"
+        if args.texture_decoder_checkpoint else first_checkpoint(
+            install_root / "texture-decoder/tex_dec_next_dc_f16c32_fp16.safetensors",
+            checkpoint.parent / "tex_dec_next_dc_f16c32_fp16.safetensors",
         )
     )
     if not texture_decoder_checkpoint.is_file():
@@ -398,8 +415,9 @@ def command_model_native_test(args: argparse.Namespace) -> None:
         )
     shape_encoder_checkpoint = (
         Path(args.shape_encoder_checkpoint).expanduser().resolve()
-        if args.shape_encoder_checkpoint else (
-            checkpoint.parent / "shape_enc_next_dc_f16c32_fp16.safetensors"
+        if args.shape_encoder_checkpoint else first_checkpoint(
+            install_root / "shape-encoder/shape_enc_next_dc_f16c32_fp16.safetensors",
+            checkpoint.parent / "shape_enc_next_dc_f16c32_fp16.safetensors",
         )
     )
     if not shape_encoder_checkpoint.is_file():
@@ -408,10 +426,10 @@ def command_model_native_test(args: argparse.Namespace) -> None:
             "pass --shape-encoder-checkpoint FILE.safetensors"
         )
     dino_checkpoint = (
-        Path(args.dino_checkpoint).expanduser().resolve() if args.dino_checkpoint else (
-            Path.home() / ".cache" / "huggingface" / "hub"
-            / "models--facebook--dinov3-vitl16-pretrain-lvd1689m" / "snapshots"
-            / "ea8dc2863c51be0a264bab82070e3e8836b02d51" / "model.safetensors"
+        Path(args.dino_checkpoint).expanduser().resolve() if args.dino_checkpoint else first_checkpoint(
+            install_root / "dino/model.safetensors",
+            hub / "models--facebook--dinov3-vitl16-pretrain-lvd1689m" / "snapshots"
+            / "ea8dc2863c51be0a264bab82070e3e8836b02d51" / "model.safetensors",
         )
     )
     if not dino_checkpoint.is_file():
@@ -669,6 +687,7 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--root")
             sub.add_argument("--feature", choices=("generate", "texture", "all"), default="all")
         if name in ("test", "native-test"):
+            sub.add_argument("--checkpoint-root")
             sub.add_argument("--checkpoint")
             sub.add_argument("--texture-checkpoint")
             sub.add_argument("--sparse-structure-checkpoint")
