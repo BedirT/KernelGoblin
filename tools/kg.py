@@ -16,7 +16,6 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUPPORTED_MODEL_ADAPTERS = {"trellis2"}
 TRELLIS_NATIVE_ROOTS = {
     "Sources/KernelGoblinTrellis2",
     "Sources/KernelGoblinTrellis2CLI",
@@ -45,6 +44,13 @@ TRELLIS_FORBIDDEN_RUNTIME_APIS = (
     re.compile(r"\bProcess\s*[.(]"),
     re.compile(r"\b(?:posix_spawn|system|dlopen|dlsym)\s*\("),
 )
+MODEL_ADAPTER_CONTRACTS = {
+    "trellis2": {
+        "package": "KernelGoblinTrellis2",
+        "executable": "kg-trellis2",
+        "source_roots": TRELLIS_NATIVE_ROOTS,
+    },
+}
 
 
 def manifest_inventory() -> tuple[dict[str, dict], list[str]]:
@@ -112,7 +118,27 @@ def require_model(model_id: str, adapter: str = "trellis2") -> dict:
             f"model {model_id!r} uses adapter {manifest.get('adapter', 'none')!r}; "
             f"this command requires {adapter!r}"
         )
+    contract_errors = model_adapter_errors(manifest)
+    if contract_errors:
+        raise SystemExit("\n".join(f"ERROR: {error}" for error in contract_errors))
     return manifest
+
+
+def model_adapter_errors(manifest: dict) -> list[str]:
+    adapter = manifest.get("adapter")
+    contract = MODEL_ADAPTER_CONTRACTS.get(adapter)
+    if contract is None:
+        return [f"unsupported model adapter {adapter!r}"]
+    native = manifest.get("native", {})
+    errors: list[str] = []
+    for field in ("package", "executable"):
+        if native.get(field) != contract[field]:
+            errors.append(
+                f"adapter {adapter!r} requires native.{field}={contract[field]!r}"
+            )
+    if set(native.get("source_roots", [])) != set(contract["source_roots"]):
+        errors.append(f"adapter {adapter!r} has mismatched native.source_roots")
+    return errors
 
 
 def kernel(value: str) -> dict:
@@ -154,15 +180,15 @@ def native_source_errors() -> list[str]:
     return errors
 
 
-def native_package_errors(description: dict) -> list[str]:
+def native_package_errors(description: dict, executable_name: str) -> list[str]:
     errors: list[str] = []
     targets = {target["name"]: target for target in description.get("targets", [])}
     products = {
         product["name"]: product for product in description.get("products", [])
     }
-    executable = products.get("kg-trellis2")
+    executable = products.get(executable_name)
     if executable is None:
-        return ["Swift package does not declare the kg-trellis2 product"]
+        return [f"Swift package does not declare the {executable_name} product"]
 
     pending = list(executable.get("targets", []))
     closure: set[str] = set()
@@ -172,14 +198,14 @@ def native_package_errors(description: dict) -> list[str]:
             continue
         target = targets.get(name)
         if target is None:
-            errors.append(f"kg-trellis2 depends on unresolved local target {name}")
+            errors.append(f"{executable_name} depends on unresolved local target {name}")
             continue
         closure.add(name)
         pending.extend(target.get("target_dependencies", []))
 
     if closure != TRELLIS_NATIVE_TARGETS:
         errors.append(
-            "kg-trellis2 local target closure must be exactly "
+            f"{executable_name} local target closure must be exactly "
             + ", ".join(sorted(TRELLIS_NATIVE_TARGETS))
         )
     for name in sorted(closure):
@@ -242,11 +268,18 @@ def command_doctor(_: argparse.Namespace) -> None:
         "cmake": shutil.which("cmake"),
         "ninja": shutil.which("ninja"),
     }
-    has_metal = any("metal" in item.get("backends", []) for item in manifests().values())
+    models = model_manifests().values()
+    has_swift_model = any(
+        item.get("production_runtime") == "swift-metal" for item in models
+    )
+    has_metal = has_swift_model or any(
+        "metal" in item.get("backends", []) for item in manifests().values()
+    )
     has_cuda = any("cuda" in item.get("backends", []) for item in manifests().values())
     if platform.system() == "Darwin" and has_metal:
-        checks["swift"] = shutil.which("swift")
         checks["xcrun"] = shutil.which("xcrun")
+        if has_swift_model:
+            checks["swift"] = shutil.which("swift")
     elif has_cuda:
         checks["nvcc"] = shutil.which("nvcc")
     failed = False
@@ -296,6 +329,13 @@ def command_validate(_: argparse.Namespace) -> None:
             errors.append(f"{item['_path']}: verification.comparison is required")
         if not (item["_path"].parent / "README.md").is_file():
             errors.append(f"{item['_path'].parent}: missing README.md")
+        if not (item["_path"].parent / "CMakeLists.txt").is_file():
+            errors.append(f"{item['_path'].parent}: missing CMakeLists.txt")
+        benchmark = Path(str(item.get("benchmark", "")))
+        if benchmark.is_absolute() or ".." in benchmark.parts:
+            errors.append(
+                f"{item['_path']}: benchmark must be a relative path inside the build"
+            )
 
     for model in models.values():
         path = model["_path"]
@@ -308,8 +348,7 @@ def command_validate(_: argparse.Namespace) -> None:
                 errors.append(f"{path}: missing {field}")
         if model.get("id") != expected_id:
             errors.append(f"{path}: id must match directory {expected_id!r}")
-        if model.get("adapter") not in SUPPORTED_MODEL_ADAPTERS:
-            errors.append(f"{path}: unsupported model adapter {model.get('adapter')!r}")
+        errors.extend(f"{path}: {error}" for error in model_adapter_errors(model))
         source = model.get("source", {})
         for field in ("repository", "revision", "license"):
             if not source.get(field):
@@ -376,7 +415,26 @@ def command_validate(_: argparse.Namespace) -> None:
         path = skill_root / "references" / reference
         if not path.is_file() or not path.read_text().strip():
             errors.append(f"{skill_file}: missing non-empty reference {reference}")
-    for required in (ROOT / "AGENTS.md", ROOT / "THIRD_PARTY_NOTICES.md", ROOT / ".codex" / "config.toml"):
+    skill_metadata = skill_root / "agents" / "openai.yaml"
+    metadata_text = skill_metadata.read_text() if skill_metadata.is_file() else ""
+    for key in ("display_name", "short_description", "default_prompt"):
+        if not re.search(rf"(?m)^\s{{2}}{key}:\s*[\"']?\S", metadata_text):
+            errors.append(f"{skill_metadata}: missing interface.{key}")
+
+    config_file = ROOT / ".codex" / "config.toml"
+    try:
+        with config_file.open("rb") as stream:
+            config = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        errors.append(f"{config_file}: invalid project config: {error}")
+    else:
+        concurrency = config.get("agents", {}).get("max_concurrent_threads_per_session")
+        if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency < 1:
+            errors.append(
+                f"{config_file}: agents.max_concurrent_threads_per_session "
+                "must be a positive integer"
+            )
+    for required in (ROOT / "AGENTS.md", ROOT / "THIRD_PARTY_NOTICES.md"):
         if not required.is_file():
             errors.append(f"missing required harness file: {required}")
 
@@ -401,25 +459,28 @@ def command_benchmark(args: argparse.Namespace) -> None:
     item = kernel(args.kernel)
     configure(item)
     executable = kernel_build_dir(item) / item["benchmark"]
+    if not executable.is_file():
+        raise SystemExit(f"benchmark executable was not built: {executable}")
     run([str(executable)])
 
 
-def trellis_python() -> Path:
-    return ROOT / "build" / "trellis2" / ".venv" / "bin" / "python"
+def trellis_python(manifest: dict) -> Path:
+    return ROOT / "build" / manifest["id"] / ".venv" / "bin" / "python"
 
 
 def command_model_oracle_setup(args: argparse.Namespace) -> None:
-    require_model(args.model)
-    run([sys.executable, str(ROOT / "ports" / "trellis2" / "setup_runtime.py")])
+    manifest = require_model(args.model)
+    run([sys.executable, str(manifest["_path"].parent / "setup_runtime.py")])
 
 
-def native_trellis_executable() -> Path:
-    run(["swift", "build", "-c", "release", "--product", "kg-trellis2"])
+def native_trellis_executable(manifest: dict) -> Path:
+    product = manifest["native"]["executable"]
+    run(["swift", "build", "-c", "release", "--product", product])
     result = subprocess.run(
         ["swift", "build", "-c", "release", "--show-bin-path"],
         cwd=ROOT, check=True, capture_output=True, text=True,
     )
-    return Path(result.stdout.strip()) / "kg-trellis2"
+    return Path(result.stdout.strip()) / product
 
 
 def native_trellis_install_root(value: str | None = None) -> Path:
@@ -433,8 +494,8 @@ def first_checkpoint(*candidates: Path) -> Path:
 
 
 def command_model_setup(args: argparse.Namespace) -> None:
-    require_model(args.model)
-    command = [str(native_trellis_executable()), "install"]
+    manifest = require_model(args.model)
+    command = [str(native_trellis_executable(manifest)), "install"]
     if getattr(args, "root", None):
         command.extend(["--root", args.root])
     if getattr(args, "feature", None):
@@ -443,8 +504,11 @@ def command_model_setup(args: argparse.Namespace) -> None:
 
 
 def command_model_native_setup(args: argparse.Namespace) -> None:
-    require_model(args.model)
-    run(["swift", "build", "-c", "release", "--product", "kg-trellis2"])
+    manifest = require_model(args.model)
+    run([
+        "swift", "build", "-c", "release", "--product",
+        manifest["native"]["executable"],
+    ])
 
 
 def command_model_native_test(args: argparse.Namespace) -> None:
@@ -568,7 +632,7 @@ def command_model_native_test(args: argparse.Namespace) -> None:
 
 
 def command_model_native_audit(args: argparse.Namespace) -> None:
-    require_model(args.model)
+    manifest = require_model(args.model)
     if platform.system() != "Darwin":
         raise SystemExit("native TRELLIS.2 binary audit requires macOS")
 
@@ -576,7 +640,8 @@ def command_model_native_audit(args: argparse.Namespace) -> None:
     if source_errors:
         raise SystemExit("\n".join(f"ERROR: {error}" for error in source_errors))
 
-    run(["swift", "build", "-c", "release", "--product", "kg-trellis2"])
+    executable_name = manifest["native"]["executable"]
+    run(["swift", "build", "-c", "release", "--product", executable_name])
     dependency_result = subprocess.run(
         ["swift", "package", "show-dependencies", "--format", "json"],
         cwd=ROOT,
@@ -597,7 +662,9 @@ def command_model_native_audit(args: argparse.Namespace) -> None:
         capture_output=True,
         text=True,
     )
-    package_errors = native_package_errors(json.loads(description_result.stdout))
+    package_errors = native_package_errors(
+        json.loads(description_result.stdout), executable_name
+    )
     if package_errors:
         raise SystemExit("\n".join(f"ERROR: {error}" for error in package_errors))
 
@@ -608,7 +675,7 @@ def command_model_native_audit(args: argparse.Namespace) -> None:
         capture_output=True,
         text=True,
     )
-    executable = Path(bin_result.stdout.strip()) / "kg-trellis2"
+    executable = Path(bin_result.stdout.strip()) / executable_name
     linkage = subprocess.run(
         ["otool", "-L", str(executable)],
         cwd=ROOT,
@@ -637,10 +704,11 @@ def command_model_native_audit(args: argparse.Namespace) -> None:
 
 
 def command_model_oracle_test(args: argparse.Namespace) -> None:
+    manifest = require_model(args.model)
     command_model_oracle_setup(args)
     run([
-        str(trellis_python()), "-m", "unittest", "discover",
-        "-s", "ports/trellis2/tests", "-v",
+        str(trellis_python(manifest)), "-m", "unittest", "discover",
+        "-s", str(manifest["_path"].parent / "tests"), "-v",
     ])
 
 
@@ -692,11 +760,11 @@ def command_model_native_pbr_benchmark(args: argparse.Namespace) -> None:
 
 
 def command_model_oracle_run(args: argparse.Namespace) -> None:
-    require_model(args.model)
-    if not trellis_python().is_file():
+    manifest = require_model(args.model)
+    if not trellis_python(manifest).is_file():
         command_model_oracle_setup(args)
     command = [
-        str(trellis_python()), str(ROOT / "ports" / "trellis2" / "run.py"),
+        str(trellis_python(manifest)), str(manifest["_path"].parent / "run.py"),
         "--input", args.input, "--output", args.output, "--seed", str(args.seed),
         "--pipeline-type", args.pipeline_type,
     ]
@@ -715,14 +783,14 @@ def command_model_oracle_run(args: argparse.Namespace) -> None:
 
 
 def command_model_run(args: argparse.Namespace) -> None:
-    require_model(args.model)
+    manifest = require_model(args.model)
     if args.pipeline_type != "512":
         raise SystemExit(
             "the native production coordinator currently accepts --pipeline-type 512; "
             "use `./kg model oracle-run trellis2` only when explicitly comparing upstream"
         )
     command = [
-        str(native_trellis_executable()), "generate",
+        str(native_trellis_executable(manifest)), "generate",
         "--input", args.input, "--output", args.output,
         "--seed", str(args.seed), "--texture-size", str(args.texture_size),
         "--alpha-mode", args.alpha_mode,
@@ -743,11 +811,11 @@ def command_model_run(args: argparse.Namespace) -> None:
 
 
 def command_model_oracle_texture(args: argparse.Namespace) -> None:
-    require_model(args.model)
-    if not trellis_python().is_file():
+    manifest = require_model(args.model)
+    if not trellis_python(manifest).is_file():
         command_model_oracle_setup(args)
     command = [
-        str(trellis_python()), str(ROOT / "ports" / "trellis2" / "texture.py"),
+        str(trellis_python(manifest)), str(manifest["_path"].parent / "texture.py"),
         "--mesh", args.mesh, "--input", args.input, "--output", args.output,
         "--seed", str(args.seed), "--resolution", str(args.resolution),
         "--texture-size", str(args.texture_size), "--steps", str(args.steps),
@@ -759,13 +827,13 @@ def command_model_oracle_texture(args: argparse.Namespace) -> None:
 
 
 def command_model_texture(args: argparse.Namespace) -> None:
-    require_model(args.model)
+    manifest = require_model(args.model)
     if args.resolution != 512:
         raise SystemExit(
             "the native existing-mesh coordinator currently accepts --resolution 512"
         )
     command = [
-        str(native_trellis_executable()), "texture",
+        str(native_trellis_executable(manifest)), "texture",
         "--mesh", args.mesh, "--input", args.input, "--output", args.output,
         "--seed", str(args.seed), "--steps", str(args.steps),
         "--texture-size", str(args.texture_size), "--uv-policy", args.uv_policy,
