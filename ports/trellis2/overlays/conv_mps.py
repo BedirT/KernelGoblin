@@ -33,6 +33,8 @@ def sparse_conv3d_init(
     self.kernel_size = (
         tuple(kernel_size) if isinstance(kernel_size, (list, tuple)) else (kernel_size,) * 3
     )
+    if any(size <= 0 or size % 2 == 0 for size in self.kernel_size):
+        raise ValueError("MPS submanifold convolution requires positive odd kernel sizes")
     self.stride = (1, 1, 1)
     self.dilation = (
         tuple(dilation) if isinstance(dilation, (list, tuple)) else (dilation,) * 3

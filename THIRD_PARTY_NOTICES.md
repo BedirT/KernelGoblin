@@ -2,11 +2,13 @@
 
 ## Microsoft TRELLIS.2
 
-The implementation under `kernels/trellis2/z_order/` is translated from:
+The native Morton kernel and the pinned O-Voxel CPU reference used by the
+TRELLIS.2 compatibility runtime are translated or ported from:
 
 - Repository: https://github.com/microsoft/TRELLIS.2
 - Revision: `75fbf0183001ed9876c8dbb35de6b68552ee08bd`
-- Files: `o-voxel/src/serialize/z_order.cu` and `z_order.h`
+- Files: `o-voxel/src/serialize/z_order.cu`, `z_order.h`, and
+  `o-voxel/src/convert/flexible_dual_grid.cpp`
 
 MIT License
 
@@ -29,6 +31,29 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Reference-only geometry and texture dependencies
+
+The optional Python/Torch conformance runtime installs these pinned packages
+only inside `build/trellis2/.venv`. They are not dependencies of the Swift
+package:
+
+| Package | Version | Upstream | License |
+| --- | --- | --- | --- |
+| xatlas Python bindings | `0.0.11` | https://github.com/mworchel/xatlas-python | MIT |
+| fast-simplification | `0.1.13` | https://github.com/pyvista/fast-simplification | MIT |
+| Rtree | `1.4.1` | https://github.com/Toblerity/rtree | MIT |
+
+The portable O-Voxel CPU reference compiles against Eigen at revision
+`21e4582d1739107337a03460c81412981130373e`, fetched through the pinned
+upstream submodule from https://gitlab.com/libeigen/eigen. Eigen is primarily
+licensed under MPL-2.0; its own source headers remain authoritative for
+per-file license terms.
+
+KernelGoblin studied Turbo Fieldfare's lifecycle design but copied no source
+from it. The pinned research revision is
+`drumih/turbo-fieldfare@1859181ae26eb39c9698437f806be62adc01367c`
+under Apache-2.0.
 
 ## FlexGEMM
 

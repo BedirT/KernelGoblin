@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import sys
 import time
@@ -17,6 +18,8 @@ ROOT = PORT.parents[1]
 sys.path.insert(0, str(PORT))
 
 import runtime_env
+
+runtime_env.require_no_cpu_fallback()
 
 
 DINO_REPOSITORY = "facebook/dinov3-vitl16-pretrain-lvd1689m"
@@ -216,6 +219,12 @@ def parse_args():
     )
     parser.add_argument("--no-preprocess", action="store_true")
     parser.add_argument("--steps", type=int, help="override all three sampler step counts")
+    parser.add_argument("--texture-size", type=int, default=2048)
+    parser.add_argument("--decimation-target", type=int, default=1_000_000)
+    parser.add_argument(
+        "--alpha-mode", choices=("OPAQUE", "BLEND", "MASK"), default="OPAQUE",
+        help="glTF alpha behavior; OPAQUE preserves pinned upstream semantics",
+    )
     return parser.parse_args()
 
 
@@ -294,14 +303,26 @@ def main() -> None:
         attr_layout=mesh.layout,
         voxel_size=mesh.voxel_size,
         aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
-        decimation_target=1_000_000,
+        decimation_target=args.decimation_target,
+        texture_size=args.texture_size,
+        alpha_mode=args.alpha_mode,
     )
+    pbr_evidence = glb.metadata.get("kernel_goblin_pbr")
+    if pbr_evidence is None:
+        raise RuntimeError("TRELLIS.2 export did not execute the PBR bake path")
     glb.export(glb_path)
     import trimesh
 
     reloaded = trimesh.load(glb_path, force="mesh", process=False)
     if len(reloaded.vertices) == 0 or len(reloaded.faces) == 0:
         raise RuntimeError("exported GLB did not reload with non-empty geometry")
+    if getattr(reloaded.visual, "uv", None) is None:
+        raise RuntimeError("exported GLB did not reload with UV coordinates")
+    material = getattr(reloaded.visual, "material", None)
+    if material is None or material.baseColorTexture is None:
+        raise RuntimeError("exported GLB is missing its base-color texture")
+    if material.metallicRoughnessTexture is None:
+        raise RuntimeError("exported GLB is missing its metallic-roughness texture")
 
     def sha256(path: Path) -> str:
         digest = hashlib.sha256()
@@ -315,10 +336,13 @@ def main() -> None:
 
     evidence = {
         "backend": "mps",
-        "cpu_fallback_enabled": False,
+        "cpu_fallback_enabled": os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] != "0",
         "pipeline": args.pipeline_type,
         "seed": args.seed,
         "sampler_steps": effective_steps,
+        "texture_size": args.texture_size,
+        "decimation_target": args.decimation_target,
+        "alpha_mode": args.alpha_mode,
         "preprocess_image": not args.no_preprocess,
         "input": str(args.input.resolve()),
         "input_sha256": sha256(args.input),
@@ -341,7 +365,8 @@ def main() -> None:
             "trellis_image_large": "25e0d31ffbebe4b5a97464dd851910efc3002d96",
             "dinov3": DINO_REVISION,
         },
-        "export": "vertex-color GLB; no CUDA UV unwrap or nvdiffrast texture bake",
+        "export": "UV-mapped PBR GLB with Metal rasterization",
+        "pbr": pbr_evidence,
     }
     (args.output / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(json.dumps(evidence, indent=2))

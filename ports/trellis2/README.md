@@ -1,130 +1,132 @@
-# TRELLIS.2 Apple GPU Runtime
+# TRELLIS.2 Reference Runtime
 
-This directory is the isolated compatibility layer that turns the pinned
-TRELLIS.2 CUDA-oriented inference graph into a runnable PyTorch MPS pipeline.
-It contains runtime preparation, strict checkpoint loading, backend shims,
-memory controls, conformance tests, and the evidence-producing inference CLI.
+This directory is the pinned **reference and conformance runtime** for the
+native Swift + Metal TRELLIS.2 port. It uses Python, Torch, and MPS on purpose:
+we need a working upstream-shaped graph that can produce checkpoints,
+intermediate fixtures, and end-to-end artifacts while the no-Torch runtime is
+built one verified slice at a time.
 
-| Pipeline | Status | Intended use |
+It is not the intended shipping runtime. Native code lives under
+`Sources/KernelGoblinTrellis2/`; the architecture boundary is documented in
+[`docs/NATIVE_TRELLIS2_ARCHITECTURE.md`](../../docs/NATIVE_TRELLIS2_ARCHITECTURE.md).
+
+| Reference path | Status | What the evidence proves |
 | --- | --- | --- |
-| `512` | Verified, default 12 steps | Faster correctness and quality baseline |
-| `1024_cascade` | Verified, default 12 steps | High-resolution, memory-bounded generation |
-| `1024` | Experimental | Direct high-resolution path, not end-to-end verified |
-| `1536_cascade` | Experimental | Larger cascade, not end-to-end verified |
+| `512` image-to-3D | Verified, default 12 steps | Complete pinned graph, finite geometry, reloadable vertex-color GLB |
+| `1024_cascade` image-to-3D | Verified, default 12 steps | Stage-wise memory fit at 15.28 GB maximum RSS |
+| Experimental PBR bake | Component tests pass | Metal raster, xatlas, sparse sampling, material packing, GLB reload; upstream mesh parity pending |
+| Existing-mesh texturing | Orchestration implemented | Full reference execution and artifact evidence pending |
+| `1024` and `1536_cascade` | Experimental | No default-step end-to-end claim |
 
 ## Setup
 
-Host requirements are macOS on Apple Silicon, Python 3.11, and
-[`uv`](https://docs.astral.sh/uv/). Dependencies remain isolated under
-`build/trellis2/.venv`; no global Python packages are installed.
+You need Apple Silicon, Python 3.11, and
+[`uv`](https://docs.astral.sh/uv/). Everything is installed below
+`build/trellis2/`; nothing is added to the global Python environment.
 
 ```sh
 ./kg model setup trellis2
 ./kg model test trellis2
 ```
 
-Setup clones upstream revision
-`75fbf0183001ed9876c8dbb35de6b68552ee08bd` under the ignored build directory
-and copies the selected MPS sparse-convolution backend into that checkout.
-Compatibility shims are injected through an isolated `PYTHONPATH`; they do not
-replace system or global packages.
+`model test` runs the compatibility and primitive suite. It is not a full
+generation. The stronger model gate is an explicit `model run` with the
+default 12 sampling steps and a validated output artifact.
 
-## Checkpoint Provenance
+Setup clones TRELLIS.2 revision
+`75fbf0183001ed9876c8dbb35de6b68552ee08bd`, verifies the checkout, and injects
+the selected MPS shims through an isolated `PYTHONPATH`.
 
-| Artifact | Revision |
-| --- | --- |
-| `microsoft/TRELLIS.2-4B` | `af44b45f2e35a493886929c6d786e563ec68364d` |
-| `microsoft/TRELLIS-image-large` | `25e0d31ffbebe4b5a97464dd851910efc3002d96` |
-| `facebook/dinov3-vitl16-pretrain-lvd1689m` | `ea8dc2863c51be0a264bab82070e3e8836b02d51` |
-| Optional `briaai/RMBG-2.0` | `5df4c9c76d8170882c34f6986e848ee07fd0ba43` |
+## Checkpoints And Access
+
+| Artifact | Revision | Access |
+| --- | --- | --- |
+| `microsoft/TRELLIS.2-4B` | `af44b45f2e35a493886929c6d786e563ec68364d` | Open MIT weights |
+| `microsoft/TRELLIS-image-large` | `25e0d31ffbebe4b5a97464dd851910efc3002d96` | Open MIT weights |
+| `facebook/dinov3-vitl16-pretrain-lvd1689m` | `ea8dc2863c51be0a264bab82070e3e8836b02d51` | Gated DINOv3 license |
+| Optional `briaai/RMBG-2.0` | `5df4c9c76d8170882c34f6986e848ee07fd0ba43` | Gated CC BY-NC 4.0 |
+
+TRELLIS.2's weights are open. DINOv3 is a separate image encoder used by the
+upstream graph, so image-conditioned generation still needs the owner to
+accept Meta's terms and authenticate with `hf auth login`. KernelGoblin does
+not accept a license on your behalf.
+
+RMBG is needed only when an opaque input needs background removal. A useful
+alpha channel or `--no-preprocess` avoids that optional component.
 
 Checkpoint loading rejects missing and unexpected state keys. The sole
-allowlist entry is `rope_phases`, a non-learned sparse-flow buffer regenerated
-deterministically from the pinned configuration.
+allowlist entry is `rope_phases`, a non-learned buffer regenerated from the
+pinned configuration.
 
-TRELLIS.2's weights are open, but its upstream image-conditioning graph uses
-Meta's gated DINOv3 model. Accept the terms at
-[`facebook/dinov3-vitl16-pretrain-lvd1689m`](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m)
-and authenticate with `hf auth login`. The CLI preflights a small DINOv3 file so
-missing access fails before TRELLIS weights download.
-
-RMBG-2.0 is separately gated and licensed CC BY-NC 4.0. It is loaded only for
-opaque inputs that need background removal. Useful input transparency bypasses
-it, and `--no-preprocess` bypasses preprocessing entirely.
-
-## Run
+## Run The Proven Reference Paths
 
 ```sh
-# Verified 512 path
 ./kg model run trellis2 \
-  --input path/to/image.png \
+  --input image.png \
   --output build/trellis2/output-512
 
-# Verified low-memory 1024 cascade
 ./kg model run trellis2 \
   --pipeline-type 1024_cascade \
-  --input path/to/image.png \
+  --input image.png \
   --output build/trellis2/output-1024
 ```
 
-`--seed` defaults to `42`. `--steps N` overrides all three samplers and is
-useful for smoke tests. A one-step run is not a substitute for default-step
-quality evidence.
+`--seed` defaults to `42`. `--steps N` is useful for failure-finding, but a
+one-step smoke run is never presented as default-quality evidence.
 
-Each run writes `trellis2-<pipeline>.glb` and `evidence.json`. Evidence records
-the input and output hashes, exact revisions, geometry counts, runtime,
-framework/platform details, CPU-fallback status, and export boundary. The CLI
-rejects empty or non-finite vertices, out-of-range faces, and GLBs that do not
-reload with geometry.
+Each run writes a GLB and `evidence.json`. The evidence records revisions,
+hashes, effective steps, preprocessing, device and framework details,
+CPU-fallback policy, geometry counts, memory/runtime data when measured, and
+the actual export boundary. The CLI rejects empty or non-finite geometry,
+invalid indices, and artifacts that do not reload.
 
-## Memory-Bounded Cascade
+## Why It Fits
 
-The 1024 cascade does not keep all selected checkpoints resident:
+The model name says 4B, but unified memory also holds DINO, several flow and
+decoder components, activations, sparse topology, allocator state, a large
+mesh, UV data, and textures. Loading everything together is unnecessary.
 
-1. Lazy proxies postpone checkpoint loading until a component is first used.
-2. DINOv3 is released after both conditioning resolutions are computed.
-3. Sparse structure, 512 shape, decoder upsampling, 1024 shape, texture flow,
-   shape decoding, and texture decoding execute as separate eviction stages.
-4. `torch.inference_mode()` prevents latent tensors from retaining autograd
-   graphs and earlier weights.
-5. MPS synchronization precedes component deletion and allocator cleanup.
-6. Sparse neighbor maps and matrix products use bounded chunks.
+The reference cascade therefore runs one lifetime at a time:
 
-The verified 12-step 1024 run peaked at 15,275,048,960 bytes RSS on a 36 GB
-Apple M3 Pro. It took 3,078.152 seconds, so this establishes memory fit and
-correctness, not production performance.
+1. Materialize one component lazily.
+2. Run all consumers under `torch.inference_mode()`.
+3. Synchronize MPS.
+4. Release the component and bounded sparse scratch.
+5. Continue with the small semantic output that the next stage needs.
 
-## Disk-Bounded Checkpoint Streaming
+The verified 1024 cascade peaked at 15,275,048,960 bytes RSS with no process
+swaps on a 36 GB Apple M3 Pro. It took 3,078.152 seconds. This proves memory fit
+and correctness for that device and input, not production speed or a universal
+minimum-memory claim.
 
-Only one temporary safetensors file is stored at a time. After its parameters
-load, the file and Hugging Face local-dir cache are removed in `finally`,
-including failure paths. Allow at least 4 GB free for the largest checkpoint
-plus metadata and enough room for the final GLB.
+## Experimental PBR And Mesh Texturing
 
-Use another writable filesystem for scratch downloads when the repo volume is
-tight:
+The reference now contains the pieces needed for a real material pipeline:
 
-```sh
-KG_TRELLIS2_DOWNLOAD_DIR=/path/to/scratch \
-  ./kg model run trellis2 --pipeline-type 1024_cascade \
-  --input image.png --output build/trellis2/output-1024
-```
+- deterministic UV preservation or xatlas regeneration;
+- a physical Metal UV position/face-ID rasterizer;
+- half-voxel sparse trilinear PBR sampling;
+- bounded closest-surface projection and texture fill;
+- base-color RGBA plus glTF metallic-roughness packing; and
+- a staged existing-mesh texturing CLI in `texture.py`.
+
+That is meaningful progress, but it is not yet upstream mesh-processing
+parity. The current experimental path substitutes portable simplification and
+xatlas for CuMesh cleanup/unwrap behavior. Exact topology, normal, overlap,
+projection, and nvdiffrast coverage fixtures are still required before this
+becomes the default verified export.
 
 ## Compatibility Surface
 
-| Shim / overlay | Responsibility |
+| Path | Responsibility |
 | --- | --- |
-| `overlays/conv_mps.py` | Exact submanifold sparse convolution with memory-bounded MPS chunks |
-| `shims/trellis2_mps/` | MPS device routing, sparse attention, and imported call-site patching |
-| `shims/flex_gemm/` | Sparse nearest/trilinear grid-sampling semantics |
-| `shims/o_voxel/` | Dual-grid extraction, sparse lookup, and portable GLB export |
-| `shims/cumesh/` | CPU mesh-cleanup compatibility methods used by inference |
-| `shims/nvdiffrast/` | Import-time placeholder for unused CUDA rendering imports |
-| `streaming_loader.py` | Pinned strict loading, lazy materialization, eviction, and scratch cleanup |
+| `overlays/conv_mps.py` | Submanifold sparse convolution with bounded MPS chunks |
+| `shims/trellis2_mps/` | MPS routing and sparse attention |
+| `shims/flex_gemm/` | Half-voxel nearest/trilinear sparse sampling |
+| `shims/o_voxel/` | Dual-grid reference extraction and export integration |
+| `shims/cumesh/` | Portable CPU compatibility methods |
+| `streaming_loader.py` | Pinned strict loading, lazy materialization, eviction, and cleanup |
+| `pbr/` | Experimental UV, sampling, texture, and GLB reference components |
 
-The portable exporter stores TRELLIS-predicted base color and alpha as vertex
-colors. It does not claim parity with upstream's CUDA-only UV unwrapping,
-nvdiffrast texture bake, or renderer.
-
-For exact end-to-end hashes, timings, memory measurements, troubleshooting, and
-remaining work, see [`docs/TRELLIS2_PORT.md`](../../docs/TRELLIS2_PORT.md).
+For exact hashes, timings, known gaps, and the native migration plan, read
+[`docs/TRELLIS2_PORT.md`](../../docs/TRELLIS2_PORT.md).

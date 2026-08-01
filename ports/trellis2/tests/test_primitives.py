@@ -21,9 +21,12 @@ from streaming_loader import lazy_from_pretrained, normalize_checkpoint_path
 
 runtime_env.configure_backends()
 
+from pbr import bake_pbr_mesh, prepare_surface, rasterize_metal, unwrap_mesh, validate_mesh
 from flex_gemm.ops.grid_sample import grid_sample_3d
+from flex_gemm.ops.grid_sample import grid_sample as grid_sample_module
 from o_voxel.convert.flexible_dual_grid import _lookup as voxel_lookup
 from o_voxel.convert.flexible_dual_grid import flexible_dual_grid_to_mesh
+from o_voxel.convert.flexible_dual_grid import mesh_to_flexible_dual_grid
 from o_voxel.postprocess import to_glb
 from trellis2.modules.sparse import SparseTensor, VarLenTensor
 from trellis2.modules.sparse.attention.full_attn import (
@@ -42,6 +45,82 @@ def devices() -> list[str]:
 
 
 class PrimitiveTests(unittest.TestCase):
+    def test_runtime_rejects_mps_cpu_fallback(self) -> None:
+        with mock.patch.dict("os.environ", {"PYTORCH_ENABLE_MPS_FALLBACK": "1"}):
+            with self.assertRaisesRegex(RuntimeError, "must be 0"):
+                runtime_env.require_no_cpu_fallback()
+
+    def test_mesh_validation_rejects_degenerate_and_invalid_inputs(self) -> None:
+        with self.assertRaisesRegex(ValueError, "nonzero spatial extent"):
+            validate_mesh([[0, 0, 0]] * 3, [[0, 1, 2]])
+        with self.assertRaisesRegex(ValueError, "face index"):
+            validate_mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0, 1, 3]])
+
+    def test_xatlas_unwrap_returns_valid_seam_topology(self) -> None:
+        vertices = torch.tensor([
+            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+            [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
+        ], dtype=torch.float32).numpy()
+        faces = torch.tensor([
+            [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
+            [0, 1, 5], [0, 5, 4], [2, 3, 7], [2, 7, 6],
+            [0, 4, 7], [0, 7, 3], [1, 2, 6], [1, 6, 5],
+        ], dtype=torch.int32).numpy()
+        atlas = unwrap_mesh(vertices, faces, texture_size=64, padding=2)
+        self.assertEqual(atlas.faces.shape, (12, 3))
+        self.assertGreater(len(atlas.positions), len(vertices))
+        self.assertTrue((atlas.vertex_map < len(vertices)).all())
+        self.assertTrue(((atlas.uvs >= 0) & (atlas.uvs <= 1)).all())
+
+    def test_physical_metal_uv_raster_interpolates_positions(self) -> None:
+        result = rasterize_metal(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 1]], [[0, 1, 2]],
+            [[0.125, 0.125], [0.875, 0.125], [0.125, 0.875]],
+            width=8,
+        )
+        self.assertIn("backend=Metal", result.backend)
+        self.assertGreater(int((result.face_ids != 0).sum()), 0)
+        covered = result.positions[result.face_ids != 0]
+        self.assertTrue((covered[:, 3] == 1).all())
+        self.assertTrue(((covered[:, :3] >= 0) & (covered[:, :3] <= 1)).all())
+
+    def test_pbr_bake_packs_channels_and_round_trips_glb(self) -> None:
+        surface = prepare_surface(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0, 1, 2]],
+            texture_size=16, decimation_target=10,
+        )
+        mesh, evidence = bake_pbr_mesh(
+            surface,
+            torch.tensor([[0.2, 0.4, 0.6, 0.8, 0.3, 0.5]]),
+            torch.tensor([[0, 0, 0]], dtype=torch.int32),
+            {
+                "base_color": slice(0, 3), "metallic": slice(3, 4),
+                "roughness": slice(4, 5), "alpha": slice(5, 6),
+            },
+            aabb=[[0, 0, 0], [1, 1, 1]], grid_size=[1, 1, 1],
+            texture_size=16,
+        )
+        material = mesh.visual.material
+        base = torch.from_numpy(__import__("numpy").array(material.baseColorTexture))
+        mr = torch.from_numpy(__import__("numpy").array(material.metallicRoughnessTexture))
+        self.assertEqual(base.shape, (16, 16, 4))
+        self.assertEqual(mr.shape, (16, 16, 3))
+        self.assertTrue(bool(((base[..., :3].to(torch.int16) - torch.tensor(
+            [51, 102, 153], dtype=torch.int16
+        )).abs() <= 4).all()))
+        self.assertTrue(bool(((base[..., 3].to(torch.int16) - 127).abs() <= 1).all()))
+        self.assertTrue(bool((mr[..., 0] == 0).all()))
+        self.assertTrue(bool(((mr[..., 1].to(torch.int16) - 76).abs() <= 2).all()))
+        self.assertTrue(bool(((mr[..., 2].to(torch.int16) - 204).abs() <= 4).all()))
+        self.assertEqual(evidence["alpha_mode"], "OPAQUE")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "pbr.glb"
+            mesh.export(output)
+            loaded = __import__("trimesh").load(output, force="mesh", process=False)
+            self.assertEqual(loaded.visual.uv.shape[1], 2)
+            self.assertIsNotNone(loaded.visual.material.baseColorTexture)
+            self.assertIsNotNone(loaded.visual.material.metallicRoughnessTexture)
+
     def test_failed_checkpoint_download_cleans_local_cache(self) -> None:
         import huggingface_hub
 
@@ -273,6 +352,70 @@ class PrimitiveTests(unittest.TestCase):
                 ).cpu()
                 torch.testing.assert_close(actual, torch.tensor([[[1.0], [2.0]]]))
 
+    def test_sparse_grid_sampling_chunks_without_changing_results(self) -> None:
+        coords = torch.tensor(
+            [[0, x, 0, 0] for x in range(4)], dtype=torch.int32
+        )
+        feats = torch.tensor([[1.0], [3.0], [7.0], [15.0]])
+        grid = torch.tensor([[[0.5, 0.5, 0.5], [1.0, 0.5, 0.5],
+                              [2.0, 0.5, 0.5], [3.0, 0.5, 0.5]]])
+        for device in devices():
+            with self.subTest(device=device), mock.patch.object(
+                grid_sample_module, "_SAMPLE_CHUNK_SIZE", 1
+            ):
+                actual = grid_sample_3d(
+                    feats.to(device), coords.to(device),
+                    torch.Size((1, 1, 4, 1, 1)), grid.to(device),
+                )
+                torch.testing.assert_close(
+                    actual.cpu(), torch.tensor([[[1.0], [2.0], [5.0], [11.0]]])
+                )
+
+    def test_sparse_grid_sampling_renormalizes_missing_neighbors(self) -> None:
+        coords = torch.tensor([[0, 0, 0, 0]], dtype=torch.int32)
+        feats = torch.tensor([[6.0]])
+        grid = torch.tensor([[[0.75, 0.75, 0.75], [8.0, 8.0, 8.0]]])
+        for device in devices():
+            with self.subTest(device=device):
+                actual = grid_sample_3d(
+                    feats.to(device), coords.to(device),
+                    torch.Size((1, 1, 2, 2, 2)), grid.to(device),
+                )
+                torch.testing.assert_close(
+                    actual.cpu(), torch.tensor([[[6.0], [0.0]]])
+                )
+
+    def test_sparse_grid_sampling_accumulates_low_precision_in_float32(self) -> None:
+        coords = torch.tensor(
+            [[0, x, y, z] for x in range(2) for y in range(2) for z in range(2)],
+            dtype=torch.int32,
+        )
+        feats = torch.tensor(
+            [[1000.0], [0.125], [-999.0], [0.5], [1.0], [-0.25], [3.0], [0.75]]
+        )
+        grid = torch.tensor([[[0.9, 0.8, 0.7]]])
+        shape = torch.Size((1, 1, 2, 2, 2))
+        for device in devices():
+            for dtype in (torch.float16, torch.bfloat16):
+                with self.subTest(device=device, dtype=dtype):
+                    expected = grid_sample_3d(
+                        feats.to(dtype).float(), coords, shape, grid
+                    ).to(dtype).float()
+                    actual = grid_sample_3d(
+                        feats.to(device=device, dtype=dtype), coords.to(device), shape,
+                        grid.to(device),
+                    )
+                    torch.testing.assert_close(
+                        actual.float().cpu(), expected, atol=0, rtol=0
+                    )
+
+    def test_sparse_grid_sampling_rejects_feature_coordinate_mismatch(self) -> None:
+        with self.assertRaisesRegex(ValueError, "matching coords"):
+            grid_sample_3d(
+                torch.ones(2, 1), torch.zeros(1, 4, dtype=torch.int32),
+                torch.Size((1, 1, 2, 2, 2)), torch.zeros(1, 1, 3),
+            )
+
     def test_sparse_nearest_sampling_truncates_like_cuda(self) -> None:
         coords = torch.tensor([[0, 0, 0, 0], [0, 1, 0, 0]], dtype=torch.int32)
         feats = torch.tensor([[2.0], [9.0]])
@@ -284,6 +427,12 @@ class PrimitiveTests(unittest.TestCase):
                     grid.to(device), mode="nearest",
                 )
                 torch.testing.assert_close(actual.cpu(), torch.tensor([[[2.0], [9.0]]]))
+
+    def test_sparse_convolution_rejects_even_kernel_size(self) -> None:
+        from trellis2.modules import sparse as sp
+
+        with self.assertRaisesRegex(ValueError, "positive odd kernel"):
+            sp.SparseConv3d(2, 3, 2)
 
     def test_voxel_lookup_marks_missing_coordinates(self) -> None:
         coords = torch.tensor([[0, 0, 0], [1, 2, 3], [3, 3, 3]], dtype=torch.int32)
@@ -309,6 +458,36 @@ class PrimitiveTests(unittest.TestCase):
                 self.assertEqual(vertices.shape, (4, 3))
                 self.assertEqual(faces.shape, (2, 3))
                 self.assertTrue(bool(((faces >= 0) & (faces < 4)).all()))
+
+    def test_cpu_mesh_to_dual_grid_tetrahedron_contract(self) -> None:
+        vertices = torch.tensor([
+            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0], [0.0, 0.0, 1.0],
+        ])
+        faces = torch.tensor([
+            [0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3],
+        ], dtype=torch.int32)
+        coords, dual, intersected = mesh_to_flexible_dual_grid(
+            vertices, faces, grid_size=8, aabb=[[0, 0, 0], [1, 1, 1]],
+        )
+        self.assertEqual(coords.shape, (152, 3))
+        self.assertEqual(dual.shape, coords.shape)
+        self.assertEqual(intersected.shape, coords.shape)
+        self.assertEqual(coords.dtype, torch.int32)
+        self.assertEqual(dual.dtype, torch.float32)
+        self.assertEqual(intersected.dtype, torch.bool)
+        self.assertTrue(bool(torch.isfinite(dual).all()))
+        self.assertTrue(bool(((coords >= 0) & (coords < 8)).all()))
+        torch.testing.assert_close(
+            intersected.sum(dim=0), torch.tensor([47, 47, 47])
+        )
+
+    def test_cpu_mesh_to_dual_grid_rejects_bad_faces(self) -> None:
+        with self.assertRaisesRegex(ValueError, "face index"):
+            mesh_to_flexible_dual_grid(
+                [[0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0, 1, 3]],
+                grid_size=8, aabb=[[0, 0, 0], [1, 1, 1]],
+            )
 
     def test_voxel_lookup_rejects_out_of_bounds_key_collisions(self) -> None:
         coords = torch.tensor([[0, 0, 0], [0, 1, 0]], dtype=torch.int32)

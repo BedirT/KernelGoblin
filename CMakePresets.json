@@ -24,6 +24,14 @@
       "cacheVariables": {
         "KG_BUILD_TRELLIS2_Z_ORDER": "ON"
       }
+    },
+    {
+      "name": "trellis2-uv-raster",
+      "displayName": "TRELLIS.2 UV raster (Metal)",
+      "inherits": "base",
+      "cacheVariables": {
+        "KG_BUILD_TRELLIS2_UV_RASTER": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -31,12 +39,24 @@
       "name": "trellis2-z-order",
       "configurePreset": "trellis2-z-order",
       "jobs": 0
+    },
+    {
+      "name": "trellis2-uv-raster",
+      "configurePreset": "trellis2-uv-raster",
+      "jobs": 0
     }
   ],
   "testPresets": [
     {
       "name": "trellis2-z-order",
       "configurePreset": "trellis2-z-order",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "trellis2-uv-raster",
+      "configurePreset": "trellis2-uv-raster",
       "output": {
         "outputOnFailure": true
       }

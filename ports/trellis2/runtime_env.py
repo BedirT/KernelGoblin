@@ -14,7 +14,16 @@ UPSTREAM = ROOT / "build" / "trellis2" / "upstream"
 SHIMS = PORT / "shims"
 
 
+def require_no_cpu_fallback() -> None:
+    value = os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "0")
+    if value != "0":
+        raise RuntimeError(
+            "PYTORCH_ENABLE_MPS_FALLBACK must be 0 for verified Metal/MPS execution"
+        )
+
+
 def activate() -> None:
+    require_no_cpu_fallback()
     for path in (str(SHIMS), str(UPSTREAM)):
         if path not in sys.path:
             sys.path.insert(0, path)

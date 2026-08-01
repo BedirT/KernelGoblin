@@ -35,6 +35,10 @@ def prepare_checkout() -> None:
     ).strip()
     if actual != REVISION:
         raise SystemExit(f"runtime checkout is {actual}, expected {REVISION}")
+    run(
+        "git", "submodule", "update", "--init", "--depth", "1",
+        "o-voxel/third_party/eigen", cwd=UPSTREAM,
+    )
 
     source = PORT / "overlays" / "conv_mps.py"
     destination = UPSTREAM / "trellis2" / "modules" / "sparse" / "conv" / "conv_mps.py"
@@ -48,6 +52,9 @@ def prepare_environment() -> None:
         "uv", "pip", "install", "--python", str(VENV / "bin" / "python"),
         "-r", str(PORT / "requirements.txt"),
     )
+    run("cmake", "--preset", "trellis2-uv-raster")
+    run("cmake", "--build", "--preset", "trellis2-uv-raster")
+    run(str(VENV / "bin" / "python"), str(PORT / "build_fdg_extension.py"))
 
 
 def main() -> None:

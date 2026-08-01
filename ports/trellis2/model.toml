@@ -1,0 +1,38 @@
+id = "trellis2"
+model = "microsoft/TRELLIS.2"
+description = "Native Swift and Metal image-to-3D and existing-mesh texturing runtime"
+production_runtime = "swift-metal"
+reference_runtime = "python-torch-mps"
+platforms = ["macos-arm64"]
+
+[source]
+repository = "https://github.com/microsoft/TRELLIS.2"
+revision = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
+license = "MIT"
+
+[[checkpoints]]
+repository = "microsoft/TRELLIS.2-4B"
+revision = "af44b45f2e35a493886929c6d786e563ec68364d"
+license = "MIT"
+
+[[checkpoints]]
+repository = "microsoft/TRELLIS-image-large"
+revision = "25e0d31ffbebe4b5a97464dd851910efc3002d96"
+license = "MIT"
+
+[[checkpoints]]
+repository = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+revision = "ea8dc2863c51be0a264bab82070e3e8836b02d51"
+license = "DINOv3 License"
+gated = true
+
+[native]
+package = "KernelGoblinTrellis2"
+executable = "kg-trellis2"
+minimum_macos = 14
+weight_lifecycle = "whole-stage mapped load, synchronized release"
+
+[verification]
+physical_backend = "Metal"
+reference = "Pinned Torch/MPS and upstream CUDA golden fixtures"
+full_model_status = "in-progress"

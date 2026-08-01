@@ -1,4 +1,4 @@
-"""Portable mesh export fallback for generated TRELLIS.2 results."""
+"""Metal-backed PBR export for generated TRELLIS.2 results."""
 
 from __future__ import annotations
 
@@ -7,13 +7,32 @@ import torch
 import trimesh
 
 from flex_gemm.ops.grid_sample import grid_sample_3d
+from pbr import bake_pbr_mesh, prepare_surface
 
 
 def to_glb(
     vertices, faces, attr_volume=None, coords=None, attr_layout=None,
     aabb=((-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)), voxel_size=None,
-    grid_size=None, decimation_target=1_000_000, **kwargs,
+    grid_size=None, decimation_target=1_000_000, texture_size=2048,
+    alpha_mode="OPAQUE", **kwargs,
 ):
+    layout = attr_layout or {}
+    pbr_layout = {"base_color", "metallic", "roughness"}.issubset(layout)
+    if attr_volume is not None and coords is not None and pbr_layout:
+        surface = prepare_surface(
+            vertices.detach().cpu().numpy(), faces.detach().cpu().numpy(),
+            texture_size=texture_size, decimation_target=decimation_target,
+        )
+        mesh, evidence = bake_pbr_mesh(
+            surface, attr_volume, coords, layout,
+            aabb=aabb, voxel_size=voxel_size, grid_size=grid_size,
+            texture_size=texture_size, alpha_mode=alpha_mode,
+        )
+        # Callers that need structured bake evidence can read this transient
+        # attribute before export; Trimesh does not serialize it into GLB.
+        mesh.metadata["kernel_goblin_pbr"] = evidence
+        return mesh
+
     vertices_np = vertices.detach().cpu().numpy().copy()
     vertices_np[:, 1], vertices_np[:, 2] = (
         vertices_np[:, 2].copy(), -vertices_np[:, 1].copy()
@@ -37,9 +56,9 @@ def to_glb(
         batched_coords = torch.cat([torch.zeros_like(coords[:, :1]), coords], dim=1)
         shape = torch.Size([1, attr_volume.shape[1], *grid_size.tolist()])
         attrs = grid_sample_3d(attr_volume, batched_coords, shape, queries)[0]
-        color_slice = (attr_layout or {}).get("base_color", slice(0, 3))
+        color_slice = layout.get("base_color", slice(0, 3))
         rgb = attrs[:, color_slice].clamp(0, 1).detach().cpu().numpy()
-        alpha_slice = (attr_layout or {}).get("alpha")
+        alpha_slice = layout.get("alpha")
         alpha = (
             attrs[:, alpha_slice].clamp(0, 1).detach().cpu().numpy()
             if alpha_slice is not None else np.ones((len(vertices), 1), dtype=np.float32)
@@ -47,9 +66,4 @@ def to_glb(
         mesh.visual.vertex_colors = np.clip(
             np.concatenate([rgb, alpha], axis=1) * 255, 0, 255
         ).astype(np.uint8)
-    if len(mesh.faces) > decimation_target:
-        try:
-            mesh = mesh.simplify_quadric_decimation(face_count=decimation_target)
-        except BaseException:
-            pass
     return mesh

@@ -106,6 +106,29 @@ def command_validate(_: argparse.Namespace) -> None:
         if not (item["_path"].parent / "README.md").is_file():
             errors.append(f"{item['_path'].parent}: missing README.md")
 
+    for path in sorted((ROOT / "ports").glob("*/model.toml")):
+        with path.open("rb") as stream:
+            model = tomllib.load(stream)
+        expected_id = path.parent.name
+        for field in (
+            "id", "model", "description", "production_runtime",
+            "reference_runtime", "platforms",
+        ):
+            if not model.get(field):
+                errors.append(f"{path}: missing {field}")
+        if model.get("id") != expected_id:
+            errors.append(f"{path}: id must match directory {expected_id!r}")
+        source = model.get("source", {})
+        for field in ("repository", "revision", "license"):
+            if not source.get(field):
+                errors.append(f"{path}: missing source.{field}")
+        revisions = [source.get("revision")] + [
+            checkpoint.get("revision") for checkpoint in model.get("checkpoints", [])
+        ]
+        for revision in revisions:
+            if revision and not full_sha.match(revision):
+                errors.append(f"{path}: revision {revision!r} must be a full lowercase Git SHA")
+
     agent_dir = ROOT / ".codex" / "agents"
     for path in sorted(agent_dir.glob("*.toml")):
         with path.open("rb") as stream:
@@ -156,6 +179,18 @@ def command_model_setup(args: argparse.Namespace) -> None:
     run([sys.executable, str(ROOT / "ports" / "trellis2" / "setup_runtime.py")])
 
 
+def command_model_native_setup(args: argparse.Namespace) -> None:
+    if args.model != "trellis2":
+        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    run(["swift", "build", "-c", "release", "--product", "kg-trellis2"])
+
+
+def command_model_native_test(args: argparse.Namespace) -> None:
+    if args.model != "trellis2":
+        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    run(["swift", "test", "--parallel"])
+
+
 def command_model_test(args: argparse.Namespace) -> None:
     command_model_setup(args)
     run([
@@ -178,6 +213,28 @@ def command_model_run(args: argparse.Namespace) -> None:
         command.append("--no-preprocess")
     if args.steps is not None:
         command.extend(["--steps", str(args.steps)])
+    command.extend([
+        "--texture-size", str(args.texture_size),
+        "--decimation-target", str(args.decimation_target),
+        "--alpha-mode", args.alpha_mode,
+    ])
+    run(command)
+
+
+def command_model_texture(args: argparse.Namespace) -> None:
+    if args.model != "trellis2":
+        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    if not trellis_python().is_file():
+        command_model_setup(args)
+    command = [
+        str(trellis_python()), str(ROOT / "ports" / "trellis2" / "texture.py"),
+        "--mesh", args.mesh, "--input", args.input, "--output", args.output,
+        "--seed", str(args.seed), "--resolution", str(args.resolution),
+        "--texture-size", str(args.texture_size), "--steps", str(args.steps),
+        "--uv-policy", args.uv_policy, "--alpha-mode", args.alpha_mode,
+    ]
+    if args.no_preprocess:
+        command.append("--no-preprocess")
     run(command)
 
 
@@ -199,7 +256,9 @@ def parser() -> argparse.ArgumentParser:
     model_commands = model.add_subparsers(dest="model_command", required=True)
     for name, help_text, function in (
         ("setup", "prepare an isolated model runtime", command_model_setup),
-        ("test", "run model-runtime conformance tests", command_model_test),
+        ("test", "run reference compatibility and primitive tests", command_model_test),
+        ("native-setup", "build the no-Torch Swift/Metal runtime", command_model_native_setup),
+        ("native-test", "run native Swift/Metal conformance tests", command_model_native_test),
     ):
         sub = model_commands.add_parser(name, help=help_text)
         sub.add_argument("model")
@@ -215,8 +274,26 @@ def parser() -> argparse.ArgumentParser:
         default="512",
     )
     model_run.add_argument("--steps", type=int)
+    model_run.add_argument("--texture-size", type=int, default=2048)
+    model_run.add_argument("--decimation-target", type=int, default=1_000_000)
+    model_run.add_argument("--alpha-mode", choices=("OPAQUE", "BLEND", "MASK"), default="OPAQUE")
     model_run.add_argument("--no-preprocess", action="store_true")
     model_run.set_defaults(func=command_model_run)
+    model_texture = model_commands.add_parser(
+        "texture", help="texture an existing mesh with TRELLIS.2"
+    )
+    model_texture.add_argument("model")
+    model_texture.add_argument("--mesh", required=True)
+    model_texture.add_argument("--input", required=True)
+    model_texture.add_argument("--output", required=True)
+    model_texture.add_argument("--seed", type=int, default=42)
+    model_texture.add_argument("--resolution", type=int, choices=(512, 1024, 1536), default=512)
+    model_texture.add_argument("--texture-size", type=int, choices=(1024, 2048, 4096), default=2048)
+    model_texture.add_argument("--steps", type=int, default=12)
+    model_texture.add_argument("--uv-policy", choices=("preserve", "regenerate"), default="preserve")
+    model_texture.add_argument("--alpha-mode", choices=("OPAQUE", "BLEND", "MASK"), default="OPAQUE")
+    model_texture.add_argument("--no-preprocess", action="store_true")
+    model_texture.set_defaults(func=command_model_texture)
     return result
 
 

@@ -1,8 +1,10 @@
-"""Pure PyTorch inference extraction for O-Voxel flexible dual grids."""
+"""CPU mesh conversion and PyTorch extraction for O-Voxel flexible dual grids."""
 
 from __future__ import annotations
 
 import torch
+import importlib.util
+from pathlib import Path
 
 
 EDGE_OFFSETS = torch.tensor([
@@ -12,6 +14,86 @@ EDGE_OFFSETS = torch.tensor([
 ], dtype=torch.int64)
 SPLIT_1 = torch.tensor([0, 1, 2, 0, 2, 3], dtype=torch.int64)
 SPLIT_2 = torch.tensor([0, 1, 3, 3, 1, 2], dtype=torch.int64)
+
+
+def _cpu_extension():
+    root = Path(__file__).resolve().parents[5]
+    matches = list((root / "build" / "trellis2" / "fdg").glob("kg_trellis2_fdg*.so"))
+    if len(matches) != 1:
+        raise RuntimeError(
+            "CPU dual-grid extension is not built; run `./kg model setup trellis2`"
+        )
+    spec = importlib.util.spec_from_file_location("kg_trellis2_fdg", matches[0])
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load CPU dual-grid extension")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@torch.no_grad()
+def mesh_to_flexible_dual_grid(
+    vertices, faces, voxel_size=None, grid_size=None, aabb=None,
+    face_weight=1.0, boundary_weight=1.0, regularization_weight=0.1,
+    timing=False,
+):
+    vertices = torch.as_tensor(vertices, dtype=torch.float32, device="cpu").contiguous()
+    faces = torch.as_tensor(faces, dtype=torch.int32, device="cpu").contiguous()
+    if vertices.ndim != 2 or vertices.shape[1] != 3 or not len(vertices):
+        raise ValueError("vertices must be a nonempty [V, 3] tensor")
+    if faces.ndim != 2 or faces.shape[1] != 3 or not len(faces):
+        raise ValueError("faces must be a nonempty [F, 3] tensor")
+    if not bool(torch.isfinite(vertices).all()):
+        raise ValueError("vertices must be finite")
+    if int(faces.min()) < 0 or int(faces.max()) >= len(vertices):
+        raise ValueError("face index exceeds vertex count")
+    if voxel_size is None and grid_size is None:
+        raise ValueError("voxel_size or grid_size is required")
+    if aabb is None:
+        minimum = vertices.min(dim=0).values
+        maximum = vertices.max(dim=0).values
+        if bool(((maximum - minimum) <= torch.finfo(torch.float32).eps).all()):
+            raise ValueError("mesh must have nonzero spatial extent")
+        if voxel_size is not None:
+            voxel = torch.as_tensor(voxel_size, dtype=torch.float32)
+            if voxel.ndim == 0:
+                voxel = voxel.repeat(3)
+            padding = torch.ceil((maximum - minimum) / voxel) * voxel - (maximum - minimum)
+            minimum -= padding * 0.5
+            maximum += padding * 0.5
+        else:
+            grid = torch.as_tensor(grid_size, dtype=torch.int32)
+            if grid.ndim == 0:
+                grid = grid.repeat(3)
+            if bool((grid <= 1).any()):
+                raise ValueError("automatic AABB requires grid_size greater than one")
+            padding = (maximum - minimum) / (grid - 1)
+            minimum -= padding * 0.5
+            maximum += padding * 0.5
+        aabb = torch.stack([minimum, maximum])
+    else:
+        aabb = torch.as_tensor(aabb, dtype=torch.float32, device="cpu")
+    if aabb.shape != (2, 3) or not bool(torch.isfinite(aabb).all()):
+        raise ValueError("aabb must be a finite [2, 3] tensor")
+    if voxel_size is None:
+        grid = torch.as_tensor(grid_size, dtype=torch.int32, device="cpu")
+        if grid.ndim == 0:
+            grid = grid.repeat(3)
+        voxel = (aabb[1] - aabb[0]) / grid
+    else:
+        voxel = torch.as_tensor(voxel_size, dtype=torch.float32, device="cpu")
+        if voxel.ndim == 0:
+            voxel = voxel.repeat(3)
+        grid = ((aabb[1] - aabb[0]) / voxel).round().to(torch.int32)
+    if voxel.shape != (3,) or grid.shape != (3,) or bool((voxel <= 0).any()) or bool((grid <= 0).any()):
+        raise ValueError("voxel_size and grid_size must be positive 3-vectors")
+    local_vertices = (vertices - aabb[0]).contiguous()
+    grid_range = torch.stack([torch.zeros_like(grid), grid]).to(torch.int32).contiguous()
+    return _cpu_extension().mesh_to_flexible_dual_grid_cpu(
+        local_vertices, faces, voxel.contiguous(), grid_range,
+        float(face_weight), float(boundary_weight), float(regularization_weight),
+        bool(timing),
+    )
 
 
 def _lookup(coords, queries, grid_size):

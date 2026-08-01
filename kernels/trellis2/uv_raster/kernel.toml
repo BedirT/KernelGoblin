@@ -1,0 +1,24 @@
+id = "trellis2/uv_raster"
+description = "UV-space position and triangle-ID rasterization for PBR texture baking"
+model = "microsoft/TRELLIS.2"
+operation = "uv_position_rasterize"
+port = "cuda-to-metal"
+backends = ["cpu", "metal"]
+cmake_preset = "trellis2-uv-raster"
+benchmark = "kernels/trellis2/uv_raster/kg_trellis2_uv_raster_bench"
+
+[upstream]
+repository = "https://github.com/microsoft/TRELLIS.2"
+revision = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
+sources = ["o-voxel/o_voxel/postprocess.py"]
+license = "MIT"
+
+[domain]
+positions = "float32[V,3]"
+uvs = "float32[V,2], finite, normalized atlas coordinates"
+faces = "uint32[F,3]"
+outputs = "float32[H,W,4] positions and uint32[H,W] one-based face IDs"
+
+[verification]
+comparison = "independent analytic CPU fixtures: exact selected coverage and face IDs; interpolated positions atol=2e-6 rtol=2e-6; pinned nvdiffrast parity pending"
+physical_backend_required = true
