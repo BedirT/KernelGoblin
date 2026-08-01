@@ -1,0 +1,110 @@
+{
+  "format": "KernelGoblin complete TRELLIS.2 sparse shape encoder MPS oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "model_source": "trellis2/models/sc_vaes/sparse_unet_vae.py",
+  "model_source_sha256": "aeb41237d1c93cf3a666870c3d18e7044ba420a4e7a29aad5795bb5204731a00",
+  "spatial_source": "trellis2/modules/sparse/spatial/spatial2channel.py",
+  "spatial_source_sha256": "4c0cd556548e3f1006f24a6db7490d10de284e6457898ebc23cce059bc3bf8e7",
+  "overlay_source": "ports/trellis2/overlays/conv_mps.py",
+  "overlay_source_sha256": "02c77f172289d58c193d70a915f755b12088d6a00294f58ab70d9794a7f7ede6",
+  "oracle_call": "SparseUnetVaeEncoder.forward with pinned MPS conv overlay",
+  "checkpoint_sha256": "f37c5ff5b983b68e9946060000f09bc131f3e84318a2c8b7430a81e4b4636c41",
+  "torch_version": "2.13.0",
+  "pytorch_enable_mps_fallback": "0",
+  "device": "mps",
+  "input_coordinates": [
+    [
+      0,
+      15,
+      15,
+      15
+    ]
+  ],
+  "downsample_coordinates": [
+    [
+      [
+        0,
+        7,
+        7,
+        7
+      ]
+    ],
+    [
+      [
+        0,
+        3,
+        3,
+        3
+      ]
+    ],
+    [
+      [
+        0,
+        1,
+        1,
+        1
+      ]
+    ],
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ]
+    ]
+  ],
+  "output_coordinates": [
+    [
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "trace_layout": {
+    "input": {
+      "offset_f32": 0,
+      "shape": [
+        1,
+        6
+      ]
+    },
+    "downsample_0": {
+      "offset_f32": 6,
+      "shape": [
+        1,
+        128
+      ]
+    },
+    "downsample_1": {
+      "offset_f32": 134,
+      "shape": [
+        1,
+        256
+      ]
+    },
+    "downsample_2": {
+      "offset_f32": 390,
+      "shape": [
+        1,
+        512
+      ]
+    },
+    "downsample_3": {
+      "offset_f32": 902,
+      "shape": [
+        1,
+        1024
+      ]
+    },
+    "latent": {
+      "offset_f32": 1926,
+      "shape": [
+        1,
+        32
+      ]
+    }
+  },
+  "payload_sha256": "1890fa1b2f7d1ab10e6be502937ad938300494b17d74d6b239204217167309bd"
+}

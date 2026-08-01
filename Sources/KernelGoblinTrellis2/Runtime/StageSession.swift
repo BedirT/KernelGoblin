@@ -55,6 +55,26 @@ public struct SparseStructureStageResult: @unchecked Sendable {
     }
 }
 
+public struct ShapeDecoderStageResult: @unchecked Sendable {
+    public let rawHead: MTLBuffer
+    public let coordinates: [SparseStructureCoordinate]
+    public let spatialShape: SparseSpatialShape
+    public let subdivisionGuides: [SparseSubdivision2x]
+}
+
+public struct TextureDecoderStageResult: @unchecked Sendable {
+    public let pbrFields: MTLBuffer
+    public let coordinates: [SparseStructureCoordinate]
+    public let spatialShape: SparseSpatialShape
+}
+
+public struct ShapeEncoderStageResult: @unchecked Sendable {
+    public let latent: MTLBuffer
+    public let coordinates: [SparseStructureCoordinate]
+    public let spatialShape: SparseSpatialShape
+    public let subdivisionGuides: [SparseSubdivision2x]
+}
+
 public typealias ShapeStageModelTrace = (
     _ call: Int, _ pass: FlowConditioningPass, _ values: [Float]
 ) -> Void
@@ -330,6 +350,79 @@ public final class StageSession {
                 logits: standalone,
                 occupancy: occupancy,
                 pooledOccupancy: try SparseStructureOccupancy.downsampleMax2(occupancy)
+            )
+        }
+    }
+
+    public func decodeShapeF32(
+        latent: MTLBuffer,
+        coordinates: [SparseStructureCoordinate],
+        spatialShape: SparseSpatialShape
+    ) throws -> ShapeDecoderStageResult {
+        try autoreleasepool {
+            let (context, checkpoint, _) = try activeRuntime()
+            let result = try ShapeSparseDecoder(context: context)(
+                latent: latent, coordinates: coordinates,
+                spatialShape: spatialShape, checkpoint: checkpoint
+            )
+            return ShapeDecoderStageResult(
+                rawHead: try standaloneCopy(
+                    result.rawHead,
+                    byteCount: try stageByteCount(result.coordinates.count, 7),
+                    label: "Shape decoder standalone raw head"
+                ),
+                coordinates: result.coordinates,
+                spatialShape: result.spatialShape,
+                subdivisionGuides: result.subdivisionGuides
+            )
+        }
+    }
+
+    public func decodeTextureF32(
+        latent: MTLBuffer,
+        coordinates: [SparseStructureCoordinate],
+        spatialShape: SparseSpatialShape,
+        subdivisionGuides: [SparseSubdivision2x]
+    ) throws -> TextureDecoderStageResult {
+        try autoreleasepool {
+            let (context, checkpoint, _) = try activeRuntime()
+            let result = try TextureSparseDecoder(context: context)(
+                latent: latent, coordinates: coordinates,
+                spatialShape: spatialShape,
+                subdivisionGuides: subdivisionGuides, checkpoint: checkpoint
+            )
+            return TextureDecoderStageResult(
+                pbrFields: try standaloneCopy(
+                    result.pbrFields,
+                    byteCount: try stageByteCount(result.coordinates.count, 6),
+                    label: "Texture decoder standalone PBR fields"
+                ),
+                coordinates: result.coordinates,
+                spatialShape: result.spatialShape
+            )
+        }
+    }
+
+    public func encodeShapeF32(
+        input: MTLBuffer,
+        coordinates: [SparseStructureCoordinate],
+        spatialShape: SparseSpatialShape
+    ) throws -> ShapeEncoderStageResult {
+        try autoreleasepool {
+            let (context, checkpoint, _) = try activeRuntime()
+            let result = try ShapeSparseEncoder(context: context)(
+                input: input, coordinates: coordinates,
+                spatialShape: spatialShape, checkpoint: checkpoint
+            )
+            return ShapeEncoderStageResult(
+                latent: try standaloneCopy(
+                    result.latent,
+                    byteCount: try stageByteCount(result.coordinates.count, 32),
+                    label: "Shape encoder standalone latent"
+                ),
+                coordinates: result.coordinates,
+                spatialShape: result.spatialShape,
+                subdivisionGuides: result.subdivisionGuides
             )
         }
     }
