@@ -192,6 +192,12 @@ one workload, not a universal minimum-memory promise. The immutable environment,
 command, timing boundary, and raw values are in
 [`evidence/trellis2-native-texturing-m3pro-2026-08-01.md`](evidence/trellis2-native-texturing-m3pro-2026-08-01.md).
 
+The accepted native image-to-PBR run peaked at roughly 1.73 GB in each decoder.
+Its process maximum RSS was 2.99 GB, its macOS peak footprint was 7.25 GB, and
+it recorded zero swaps while producing 3.37 million faces. Full raw evidence is
+in
+[`evidence/trellis2-native-generation-m3pro-2026-08-01.md`](evidence/trellis2-native-generation-m3pro-2026-08-01.md).
+
 ## Reproducibility Contract
 
 Native random noise uses SplitMix64 and Box-Muller with fixed implementation

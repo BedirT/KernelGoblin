@@ -30,9 +30,9 @@ reloadable GLB export on Apple Silicon.
   223,711 source faces remained 223,711 output faces, two 2048 PBR textures
   reloaded from the GLB, maximum RSS was 3.04 GB, and the process recorded zero
   swaps.
-- Native 512 image-to-PBR generation is implemented and its final default-step
-  artifact gate is running. Until that artifact reloads, we keep the full native
-  model status **in progress**.
+- Native 512 image-to-PBR generation completed a real default 12-step run: a
+  3,370,530-face GLB with two embedded 2048 PBR textures reloaded both natively
+  and through Assimp, with zero swaps.
 - The optional Torch/MPS environment is an isolated oracle. Default install,
   test, generation, and texturing commands are native.
 
@@ -92,10 +92,10 @@ full-model claim.
 
 | Tier | What it means | TRELLIS.2 today |
 | --- | --- | --- |
-| End-to-end verified | Default settings, real checkpoints, physical backend, artifact reload | Native existing-mesh texturing; Torch/MPS 512 and 1024-cascade oracles |
+| End-to-end verified | Default settings, real checkpoints, physical backend, artifact reload | Native 512 image-to-PBR, native existing-mesh texturing; Torch/MPS 512 and 1024-cascade oracles |
 | Production-stage verified | Complete real stage and checkpoint execute with authenticated comparisons | DINOv3, both 30-block flows, sparse structure flow/decoder, shape encoder |
 | Analytic or tiny-fixture verified | Real backend and exact contract, deliberately small workload | Shape and guided texture decoders, Morton coding, UV raster, sparse attention, O-Voxel mesh extraction, PBR bake and GLB packing |
-| Implemented, acceptance pending | Full call path exists but its final artifact gate is not complete | Native 512 image-to-PBR generation |
+| Implemented, acceptance pending | Full call path exists but its final artifact gate is not complete | Native 1024/cascade modes are not implemented; those remain oracle-only |
 
 Some useful numbers from the physical M3 Pro verification:
 
@@ -122,6 +122,14 @@ The preview above is rendered from the accepted native GLB. Its exact command,
 hardware/toolchain disclosure, raw stage ledger, process accounting, and hashes
 are committed in
 [`docs/evidence/trellis2-native-texturing-m3pro-2026-08-01.md`](docs/evidence/trellis2-native-texturing-m3pro-2026-08-01.md).
+
+![Three deterministic views of the native image-to-PBR result](docs/assets/trellis2-native-generation-preview.png)
+
+This second preview is the accepted native image-to-PBR GLB, not the oracle.
+Its 12-step run took 2,357.20 seconds on this M3 Pro, reached 2.99 GB maximum
+RSS and 7.25 GB macOS peak footprint, and recorded zero swaps. The command,
+stage ledger, hashes, and independent reload are in
+[`docs/evidence/trellis2-native-generation-m3pro-2026-08-01.md`](docs/evidence/trellis2-native-generation-m3pro-2026-08-01.md).
 
 ## Native Quick Start
 
@@ -317,9 +325,10 @@ ctest --test-dir build/manual --output-on-failure
 
 ## Where We Are Going
 
-1. Finish and publish the native 512 image-to-PBR artifact record.
-2. Add rendered native before/after views and image-level comparisons to the
-   pinned oracle, not just structural GLB validation.
+1. Add image-level comparisons between native 512 and the pinned oracle, not
+   just structural GLB validation.
+2. Add rendered native before/after views for more meshes and conditioning
+   images.
 3. Improve the portable UV fallback toward CuMesh-quality charting while
    preserving strict topology gates.
 4. Profile real end-to-end runs, tile the expensive sparse kernels, and publish

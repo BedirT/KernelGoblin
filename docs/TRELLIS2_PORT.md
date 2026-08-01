@@ -133,7 +133,7 @@ fixtures.
 | UV raster | Physical Metal component | Coverage, interpolation, winding, face IDs, degenerate and shared-edge behavior |
 | PBR sampling/packing | Native component | Half-voxel sparse sampling, OpenCV-compatible Telea behavior, glTF channel packing, embedded PNG reload |
 | Existing-mesh texturing | Native end-to-end | Default 12 steps, real mesh/image/checkpoints, 223,711 faces preserved, two 2048 textures, GLB reload |
-| Image-to-PBR generation | Implemented, acceptance running | Complete coordinator reached every stage in one-step smoke; default-step artifact is required for promotion |
+| Image-to-PBR generation | Native end-to-end | Default 12 steps, real image/checkpoints, 3,370,530 faces, two 2048 textures, native and Assimp GLB reload |
 | 512 image-to-3D oracle | Torch/MPS end-to-end | Default 12 steps, reloadable 61 MB GLB |
 | 1024 cascade oracle | Torch/MPS end-to-end | Historical default-step observation: reloadable 272.8 MB GLB, 15.28 GB maximum RSS, zero swaps; not a current benchmark record |
 
@@ -185,6 +185,32 @@ stage peaks were 937,105,448 bytes for the shape encoder and 849,578,732 bytes
 for the texture decoder. The process-level footprint is larger than RSS because
 macOS reports several unified-memory views; neither number should be confused
 with the sum of every declared arena capacity.
+
+## Native Image-To-PBR Artifact Record
+
+The accepted native 512 generation used the supplied-alpha reference image,
+12 steps, a 2048 texture, seed 42, and the complete eight-component pinned
+checkpoint installation. The exact command, toolchain, raw stage ledger, and
+process accounting are committed in
+[`evidence/trellis2-native-generation-m3pro-2026-08-01.md`](evidence/trellis2-native-generation-m3pro-2026-08-01.md).
+
+| Evidence | Value |
+| --- | ---: |
+| Wall time | 2,357.20 s |
+| Maximum RSS | 2,994,143,232 bytes |
+| Peak memory footprint reported by `/usr/bin/time -l` | 7,245,727,112 bytes |
+| Swaps | 0 |
+| Decoded mesh vertices / faces | 1,575,509 / 3,370,530 |
+| GLB accessor vertices / faces | 10,111,590 / 3,370,530 |
+| Embedded textures | 2 |
+| Texture size | 2048 x 2048 |
+| GLB bytes | 378,336,688 |
+| GLB SHA-256 | `b3e941111c1209f86311ec575ef09d110076c885e978e7063ad140d3049d79bf` |
+
+Every recorded arena returned to zero live bytes before close. The largest
+arena peaks were 1,731,914,492 bytes in shape decoding and 1,728,631,324 bytes
+in texture decoding. The 39-minute wall time is dominated by three complete
+12-step diffusion flows, not by GLB writing.
 
 ## Numerical Drift And Semantic Differences
 
