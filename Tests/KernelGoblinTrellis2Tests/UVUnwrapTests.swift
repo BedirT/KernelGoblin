@@ -95,4 +95,29 @@ struct UVUnwrapTests {
             )
         }
     }
+
+    @Test("normalized small triangles are not mistaken for degenerate faces")
+    func smallTriangleTopologyPreservation() throws {
+        let positions = [
+            SIMD3<Float>(0, 0, 0),
+            SIMD3<Float>(0.0001, 0, 0),
+            SIMD3<Float>(0, 0.0001, 0),
+        ]
+        let faces = [SIMD3<UInt32>(0, 1, 2)]
+        let fallback = try PerFaceUVUnwrapper.unwrap(
+            positions: positions, faces: faces
+        )
+        #expect(fallback.faces.count == faces.count)
+        #expect(throws: NativeRuntimeError.self) {
+            _ = try ModelIOUVUnwrapper.unwrap(
+                positions: positions, faces: faces
+            )
+        }
+        let prepared = try UVPreparation.prepare(
+            positions: positions, faces: faces, suppliedUVs: nil,
+            policy: .regenerate
+        )
+        #expect(prepared.atlas.faces.count == faces.count)
+        #expect(prepared.implementation == "deterministic-native-per-face-atlas-fallback")
+    }
 }

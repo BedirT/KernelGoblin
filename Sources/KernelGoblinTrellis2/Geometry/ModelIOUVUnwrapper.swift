@@ -17,6 +17,7 @@ public enum ModelIOUVUnwrapper {
                 throw NativeRuntimeError.invalidArgument("UV unwrap positions must be finite")
             }
         }
+        var containsSmallFace = false
         let filteredFaces = try faces.filter { face in
             guard Int(face.x) < positions.count,
                   Int(face.y) < positions.count,
@@ -28,10 +29,19 @@ public enum ModelIOUVUnwrapper {
                 positions[Int(face.y)] - positions[Int(face.x)],
                 positions[Int(face.z)] - positions[Int(face.x)]
             )
-            return simd_length_squared(normal) > Float.ulpOfOne
+            let areaSquared = simd_length_squared(normal)
+            if areaSquared > 0, areaSquared <= Float.ulpOfOne {
+                containsSmallFace = true
+            }
+            return areaSquared > 0
         }
         guard !filteredFaces.isEmpty else {
             throw NativeRuntimeError.invalidArgument("UV unwrap mesh has no nondegenerate faces")
+        }
+        guard !containsSmallFace else {
+            throw NativeRuntimeError.invalidArgument(
+                "Model I/O UV unwrap is unsafe for normalized small faces"
+            )
         }
         let allocator = MDLMeshBufferDataAllocator()
         var vertexBytes = Data(capacity: positions.count * 16)

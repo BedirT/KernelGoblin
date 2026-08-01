@@ -19,7 +19,7 @@ public enum PerFaceUVUnwrapper {
                 positions[Int(face.y)] - positions[Int(face.x)],
                 positions[Int(face.z)] - positions[Int(face.x)]
             )
-            return simd_length_squared(normal) > Float.ulpOfOne
+            return simd_length_squared(normal) > 0
         }
         guard !validFaces.isEmpty,
               validFaces.count <= Int(UInt32.max) / 3 else {
