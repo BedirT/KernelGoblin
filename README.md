@@ -41,7 +41,8 @@ and a verified component is not automatically a verified model.
 
 ## What We Have Made So Far
 
-The reference journey gave us a real target instead of a collection of guesses:
+The earlier reference journey gave us a real target instead of a collection of
+guesses:
 
 | Input | Reloaded TRELLIS.2 reference output |
 | :---: | :---: |
@@ -49,10 +50,11 @@ The reference journey gave us a real target instead of a collection of guesses:
 
 The right-hand preview is the pinned Torch/MPS **oracle**, not a disguised
 native result. Its 1024-cascade GLB contains 6,717,817 vertices and 13,774,312
-faces. It fit in 15.28 GB maximum RSS on a 36 GB M3 Pro, but took roughly 51
-minutes. That was useful: it proved the graph and the open TRELLIS weights work,
-and gave us immutable outputs to port against. It was never the runtime we
-wanted to ship.
+faces. A historical acceptance run observed 15.28 GB maximum RSS and roughly
+51 minutes on a 36 GB M3 Pro. Treat that as prior reference evidence, not a
+portable benchmark: the original run predates the stricter committed raw-run
+record we now require. It was still useful - it proved the graph and open
+TRELLIS weights work and gave us immutable outputs to port against.
 
 The native runtime now covers the complete 512 graph:
 
@@ -63,9 +65,9 @@ flowchart LR
     D --> S["Sparse structure flow"]
     S --> O["Occupancy decoder"]
     O --> F["Shape flow"]
-    F --> G["Shape decoder + O-Voxel mesh"]
-    G --> T["Texture flow"]
-    T --> P["Six-channel PBR decoder"]
+    F --> T["Texture flow"]
+    T --> G["Shape decoder + O-Voxel mesh"]
+    G --> P["Guided six-channel PBR decoder"]
     P --> U["UV raster + bake"]
     U --> B["Reloadable GLB"]
 ```
@@ -91,8 +93,8 @@ full-model claim.
 | Tier | What it means | TRELLIS.2 today |
 | --- | --- | --- |
 | End-to-end verified | Default settings, real checkpoints, physical backend, artifact reload | Native existing-mesh texturing; Torch/MPS 512 and 1024-cascade oracles |
-| Production-stage verified | Complete real stage and checkpoint execute with authenticated comparisons | DINOv3, both 30-block flows, sparse structure flow/decoder, shape encoder, shape decoder, guided texture decoder |
-| Analytic or tiny-fixture verified | Real backend and exact contract, deliberately small workload | Morton coding, UV raster, sparse attention, O-Voxel mesh extraction, PBR bake and GLB packing |
+| Production-stage verified | Complete real stage and checkpoint execute with authenticated comparisons | DINOv3, both 30-block flows, sparse structure flow/decoder, shape encoder |
+| Analytic or tiny-fixture verified | Real backend and exact contract, deliberately small workload | Shape and guided texture decoders, Morton coding, UV raster, sparse attention, O-Voxel mesh extraction, PBR bake and GLB packing |
 | Implemented, acceptance pending | Full call path exists but its final artifact gate is not complete | Native 512 image-to-PBR generation |
 
 Some useful numbers from the physical M3 Pro verification:
@@ -113,6 +115,13 @@ Some useful numbers from the physical M3 Pro verification:
 The detailed ledger, exact hashes, timing boundaries, and semantic gaps live in
 [`docs/TRELLIS2_PORT.md`](docs/TRELLIS2_PORT.md). The machine-readable source of
 truth is [`ports/trellis2/model.toml`](ports/trellis2/model.toml).
+
+![Three deterministic views of the native existing-mesh PBR result](docs/assets/trellis2-native-texturing-preview.png)
+
+The preview above is rendered from the accepted native GLB. Its exact command,
+hardware/toolchain disclosure, raw stage ledger, process accounting, and hashes
+are committed in
+[`docs/evidence/trellis2-native-texturing-m3pro-2026-08-01.md`](docs/evidence/trellis2-native-texturing-m3pro-2026-08-01.md).
 
 ## Native Quick Start
 

@@ -188,7 +188,9 @@ stage ceilings; exceeding the cap fails loudly.
 The verified existing-mesh run peaked at roughly 937 MB in the shape encoder,
 850 MB in the texture decoder, 273 MB in texture flow, and 201 MB in PBR export.
 Its process maximum RSS was 3.04 GB with zero swaps. These are one device and
-one workload, not a universal minimum-memory promise.
+one workload, not a universal minimum-memory promise. The immutable environment,
+command, timing boundary, and raw values are in
+[`evidence/trellis2-native-texturing-m3pro-2026-08-01.md`](evidence/trellis2-native-texturing-m3pro-2026-08-01.md).
 
 ## Reproducibility Contract
 

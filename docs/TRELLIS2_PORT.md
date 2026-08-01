@@ -57,13 +57,13 @@ count, and SHA-256 for every selected file.
    Euler/CFG schedule.
 5. Decode occupancy at 64 cubed and pool ordered coordinates to 32 cubed.
 6. Sample the 30-block shape flow.
-7. Decode the native sparse shape hierarchy, transform its seven-channel head,
+7. Sample the 30-block texture flow while the shape latent is available.
+8. Decode the native sparse shape hierarchy, transform its seven-channel head,
    build the flexible-dual-grid mesh, and fill triangle/quad boundary holes.
-8. Sample the 30-block texture flow and decode six PBR channels over the guided
-   sparse hierarchy.
-9. Prepare a topology-safe UV atlas, rasterize positions in UV space on Metal,
+9. Decode six PBR channels over the shape-guided sparse hierarchy.
+10. Prepare a topology-safe UV atlas, rasterize positions in UV space on Metal,
    sample sparse PBR fields, and inpaint uncovered texels.
-10. Pack base-color/alpha and metallic-roughness textures into a GLB, reload it,
+11. Pack base-color/alpha and metallic-roughness textures into a GLB, reload it,
     validate geometry/material/embedded PNG contracts, and hash the artifact.
 
 ### Existing Mesh Texturing
@@ -135,7 +135,7 @@ fixtures.
 | Existing-mesh texturing | Native end-to-end | Default 12 steps, real mesh/image/checkpoints, 223,711 faces preserved, two 2048 textures, GLB reload |
 | Image-to-PBR generation | Implemented, acceptance running | Complete coordinator reached every stage in one-step smoke; default-step artifact is required for promotion |
 | 512 image-to-3D oracle | Torch/MPS end-to-end | Default 12 steps, reloadable 61 MB GLB |
-| 1024 cascade oracle | Torch/MPS end-to-end | Default 12 steps, reloadable 272.8 MB GLB, 15.28 GB maximum RSS, zero swaps |
+| 1024 cascade oracle | Torch/MPS end-to-end | Historical default-step observation: reloadable 272.8 MB GLB, 15.28 GB maximum RSS, zero swaps; not a current benchmark record |
 
 The complete native conformance command passed 93 tests in 13 suites before the
 mesh-to-encoder test was added. The new handoff test then passed independently
@@ -156,6 +156,10 @@ uv policy = regenerate with topology-safe fallback
 ```
 
 Observed on Apple M3 Pro under Metal API validation:
+
+The exact command, OS/toolchain and GPU-core disclosure, timing boundary, raw
+stage ledger, and `/usr/bin/time` output are committed in
+[`evidence/trellis2-native-texturing-m3pro-2026-08-01.md`](evidence/trellis2-native-texturing-m3pro-2026-08-01.md).
 
 | Evidence | Value |
 | --- | ---: |
