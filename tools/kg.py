@@ -369,7 +369,9 @@ def command_model_native_test(args: argparse.Namespace) -> None:
         sparse_structure_decoder_checkpoint
     )
     environment["KG_TRELLIS2_DINO_CHECKPOINT"] = str(dino_checkpoint)
-    run(["swift", "test", "--parallel"], env=environment)
+    # Physical GPU conformance and memory peaks are not meaningful when the
+    # heavyweight stage tests contend on independent Metal queues.
+    run(["swift", "test", "--no-parallel"], env=environment)
 
 
 def command_model_native_audit(args: argparse.Namespace) -> None:
@@ -450,6 +452,15 @@ def command_model_test(args: argparse.Namespace) -> None:
     ])
 
 
+def command_model_native_benchmark(args: argparse.Namespace) -> None:
+    if args.model != "trellis2":
+        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    run([
+        "swift", "run", "-c", "release", "kg-trellis2-dense-bench",
+        "--warmup", str(args.warmup), "--iterations", str(args.iterations),
+    ])
+
+
 def command_model_run(args: argparse.Namespace) -> None:
     if args.model != "trellis2":
         raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
@@ -513,6 +524,7 @@ def parser() -> argparse.ArgumentParser:
         ("native-setup", "build the no-Torch Swift/Metal runtime", command_model_native_setup),
         ("native-test", "run native Swift/Metal conformance tests", command_model_native_test),
         ("native-audit", "audit the release binary for a Swift/Metal-only runtime", command_model_native_audit),
+        ("native-benchmark", "benchmark native Metal model primitives", command_model_native_benchmark),
     ):
         sub = model_commands.add_parser(name, help=help_text)
         sub.add_argument("model")
@@ -522,6 +534,9 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--sparse-structure-checkpoint")
             sub.add_argument("--sparse-structure-decoder-checkpoint")
             sub.add_argument("--dino-checkpoint")
+        if name == "native-benchmark":
+            sub.add_argument("--warmup", type=int, default=5)
+            sub.add_argument("--iterations", type=int, default=20)
         sub.set_defaults(func=function)
     model_run = model_commands.add_parser("run", help="run real model inference")
     model_run.add_argument("model")

@@ -7,6 +7,10 @@ let package = Package(
     products: [
         .library(name: "KernelGoblinTrellis2", targets: ["KernelGoblinTrellis2"]),
         .executable(name: "kg-trellis2", targets: ["KernelGoblinTrellis2CLI"]),
+        .executable(
+            name: "kg-trellis2-dense-bench",
+            targets: ["KernelGoblinTrellis2DenseBenchmark"]
+        ),
     ],
     targets: [
         .target(
@@ -18,6 +22,11 @@ let package = Package(
             name: "KernelGoblinTrellis2CLI",
             dependencies: ["KernelGoblinTrellis2"],
             path: "Sources/KernelGoblinTrellis2CLI"
+        ),
+        .executableTarget(
+            name: "KernelGoblinTrellis2DenseBenchmark",
+            dependencies: ["KernelGoblinTrellis2"],
+            path: "Benchmarks/KernelGoblinTrellis2Dense"
         ),
         .testTarget(
             name: "KernelGoblinTrellis2Tests",

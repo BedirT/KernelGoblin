@@ -65,7 +65,7 @@ baseline is exactly what the native Metal runtime is here to replace.
 | Bounded Metal allocation | **Verified native foundation** | Heap-backed arena rejects overflow, records cumulative-requested/current/peak bytes, releases dead buffers, and covers both sampler-to-flow integrations |
 | Synchronized stage lifetime | **Verified native foundation** | DINO, sparse flow/decoder, shape, and texture sessions drain Metal, reach zero live arena bytes, destroy the arena, observe checkpoint `munmap`, and return standalone outputs |
 | Sparse-structure transformer block | **Verified native Metal slice** | Real block 0 from the pinned 2.58 GB dense-flow checkpoint matches its authenticated Torch BF16 trace, including 128-wide SIMD-group attention and 3D RoPE |
-| Sparse-structure 4,096-token flow | **Verified native production slice** | One complete sparse sampler step executes two CFG calls through all 30 blocks with the real 1,029-token context; model-call normalized RMS is at most `0.00923`, elapsed time is 92.5 s, and the bounded arena peaks at 525 MiB |
+| Sparse-structure 12-step trajectory | **Verified native execution; drift disclosed** | All 22 production model calls run over 4,096 tokens and the real 1,029-token context. Teacher-forced early/middle/late calls stay below `0.01376` normalized RMS; free-running BF16 feedback ends at `0.721` occupancy IoU rather than false exact-parity claims. The flow takes 840.8 s and peaks at 530.2 MiB on M3 Pro |
 | Sparse-structure occupancy decoder | **Verified native Metal stage** | All 74 real tensors execute at the production `16 -> 64` spatial shape; exact occupancy matches the authenticated MPS oracle, normalized RMS is `0.000181`, and the bounded arena peaks at 224 MiB |
 | Occupancy and coordinate extraction | **Verified native Swift** | Strict `> 0`, NaN/zero behavior, z-fast ordered coordinates, and exact 64-to-32 2x max pooling |
 | CPU mesh to flexible dual grid | **Verified reference extension** | Pinned O-Voxel algorithm through LibTorch, AppleClang portability patch, tetrahedron fixtures; native Swift bridge remains |
@@ -74,7 +74,7 @@ baseline is exactly what the native Metal runtime is here to replace.
 | TRELLIS.2 1024 cascade | **Verified Torch/MPS oracle** | Default 12 steps, 15.28 GB maximum RSS, reloadable 272.8 MB GLB |
 | Full PBR image-to-3D | **In progress** | Native UV and synthetic bake pass; full model artifact still needs final end-to-end proof |
 | Existing-mesh texturing | **In progress** | CPU voxelizer, UV policy, staged reference CLI, and PBR baker exist; full native model path remains |
-| Swift + Metal full model | **In progress** | Complete DINO, both SLat flows, one production sparse step, and the production sparse decoder pass; the 12-step sparse trajectory, image preprocessing, shape/texture decoding, mesh extraction, and PBR assembly remain |
+| Swift + Metal full model | **In progress** | Complete DINO, both SLat graphs, the production 12-step sparse trajectory, and its decoder handoff execute natively; raw-image preprocessing, production shape/texture sampling, shape/texture decoding, mesh extraction, and PBR assembly remain |
 
 That distinction matters. A kernel can be verified while a pipeline is still
 unfinished. We do not promote the larger claim just because a nearby test is
@@ -159,6 +159,7 @@ and Ninja.
 ./kg model native-setup trellis2
 ./kg model native-audit trellis2
 ./kg model native-test trellis2
+./kg model native-benchmark trellis2
 
 # Two independently buildable Metal kernels
 ./kg test trellis2/z_order
@@ -243,6 +244,32 @@ error is `0.00733`. The two-step shape trajectory reports bounded numerical
 drift separately because CFG feeds small cross-backend reduction differences
 back into the next model call. These are graph and orchestration proofs, not
 representative sparse-token memory or generation-speed claims.
+
+The production sparse stage now goes beyond the quick graph check. It executes
+the default 12-step schedule, all 22 CFG/model calls, and then closes and
+unmaps the 2.58 GB flow stage before loading the 148 MB occupancy decoder. On
+the M3 Pro, flow execution takes 840.8 seconds, decoder execution takes 8.7
+seconds, and the two bounded arenas peak at 555,905,112 and 234,881,024 bytes.
+
+There is an important precision wrinkle here. If native Metal is given the
+exact upstream state at four points across the trajectory, each complete
+30-block call stays within `0.01376` normalized RMS of Torch/MPS. When those
+small BF16 reduction differences are fed back through all 22 calls, however,
+the final latent reaches `0.5133` normalized RMS and its decoded occupancy has
+`0.7208` IoU with the same-seed oracle. We treat the teacher-forced checks as
+model conformance and the free-running result as a structural stability gate.
+Calling the latter exact parity would be nicer marketing and worse engineering.
+
+The native dense benchmark compares the original 16-by-16 tiled BF16-weight
+projection with the new optional 8-by-8 SIMD-group matrix path. It performs a
+CPU and cross-kernel correctness gate before five warmups and twenty synchronized,
+counterbalanced measurements. On an Apple M3 Pro running macOS 26.5.2,
+representative median speedups are `1.25x` for the sparse input projection,
+`1.61x` for cross-attention KV, and `1.65x` for the 4,096-by-8,192 MLP
+projection. A one-row conditioning projection is `0.94x`,
+so automatic dispatch deliberately keeps rows below eight on the tiled path.
+The timer includes command creation, encode, commit, and completion wait, but
+excludes allocation and checkpoint mapping.
 
 On the development M3 Pro, the current UV raster benchmark reports:
 

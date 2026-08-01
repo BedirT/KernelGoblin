@@ -204,23 +204,25 @@ production 16-to-64 graph. The production run matches the authenticated MPS
 oracle's occupancy exactly, reaches `0.000181` normalized RMS for 262,144
 logits, and peaks at 224 MiB in the bounded arena before returning to zero live
 bytes. Strict occupancy thresholding, bit packing, z-fast coordinate
-extraction, and 2x max pooling are deterministic Swift. The remaining sparse
-stage gates are the complete 12-step trajectory and its combined handoff into
-this decoder.
+extraction, and 2x max pooling are deterministic Swift.
 
-That production flow gate now has its first full-size acceptance result. An
-authenticated MPS fixture drives 4,096 voxels and all 1,029 DINO-shaped context
-tokens through one real `.sparseStructure512` Euler step, including positive
-and negative CFG calls and all 30 transformer blocks. The two native model
-calls stay within `0.00923` and `0.00767` normalized RMS of the pinned oracle.
-The full step takes 92.5 seconds on Apple M3 Pro and peaks at 550,400,008 arena
-bytes (525 MiB), then
-returns to zero live bytes and unmaps the 2.58 GB checkpoint. The test verifies
-CFG orchestration independently from model arithmetic because guidance scales
-small backend-specific model differences by `7.5` and `-6.5`. The remaining
-sparse-flow work is the complete 12-step trajectory, performance tiling, and
-the stage-to-decoder acceptance fixture. A 600 MiB test cap leaves alignment
-headroom while preventing a silent regression toward the 768 MiB arena limit.
+The production flow gate now executes the complete default schedule. An
+authenticated MPS fixture carries 4,096 voxels and all 1,029 DINO-shaped
+context tokens through 12 Euler steps and 22 positive/negative model calls,
+then through the production decoder. The flow stage takes 840.8 seconds on
+Apple M3 Pro, peaks at 555,905,112 bytes, returns to zero live arena bytes, and
+unmaps its 2.58 GB checkpoint before the decoder stage is loaded. The decoder
+then takes 8.7 seconds and peaks at 234,881,024 bytes.
+
+Cross-backend BF16 feedback needs two different gates. Teacher-forced native
+calls at the beginning, middle, and end of the authenticated trajectory stay
+below `0.01376` normalized RMS and `0.04098` maximum scale ratio. Free-running
+feedback compounds those small differences: final latent normalized RMS is
+`0.5133`, decoded occupancy IoU is `0.7208`, and native occupancy contains
+67,776 voxels versus the oracle's 91,584. We therefore call the teacher-forced
+result model conformance and the free-running result structural stability, not
+exact same-seed parity. A 600 MiB flow cap still prevents silent growth toward
+the 768 MiB arena limit.
 
 The attention primitive now carries explicit segment offsets and rejects
 cross-sample attention as well as unsafe output/key/value aliases. The complete

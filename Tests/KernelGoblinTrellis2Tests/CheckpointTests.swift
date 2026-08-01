@@ -445,6 +445,138 @@ struct CheckpointTests {
         #expect(abs(actual[1] - -0.75) < 1e-6)
     }
 
+    @Test("Metal BF16 SIMD-group projection matches tiled and CPU tails")
+    func bf16DenseProjectionSIMDGroupTails() throws {
+        let context = try MetalContext()
+        let kernel = try DenseKernel(context: context)
+        guard kernel.supportsSIMDGroupMatrix else { return }
+        var state: UInt32 = 0x5eed1234
+        func randomFloat() -> Float {
+            state = state &* 1_664_525 &+ 1_013_904_223
+            return Float(Int32(bitPattern: state)) / Float(Int32.max) * 0.25
+        }
+        let shapes = [
+            (rows: 7, outputs: 7, inputs: 7),
+            (rows: 8, outputs: 8, inputs: 8),
+            (rows: 9, outputs: 9, inputs: 9),
+            (rows: 15, outputs: 17, inputs: 31),
+        ]
+        for (shapeIndex, shape) in shapes.enumerated() {
+            let prefixElements = 5
+            let hasBias = shapeIndex.isMultiple(of: 2)
+            var inputValues = (0..<(shape.rows * shape.inputs)).map { _ in randomFloat() }
+            var checkpointValues = [UInt16](repeating: 0x7fc1, count: prefixElements)
+            checkpointValues += (0..<(shape.outputs * shape.inputs)).map { _ in
+                bf16(randomFloat())
+            }
+            let biasElementOffset = checkpointValues.count
+            checkpointValues += (0..<shape.outputs).map { _ in bf16(randomFloat()) }
+            let input = try #require(context.device.makeBuffer(
+                bytes: &inputValues,
+                length: inputValues.count * MemoryLayout<Float>.stride,
+                options: .storageModeShared
+            ))
+            let checkpoint = try #require(context.device.makeBuffer(
+                bytes: &checkpointValues,
+                length: checkpointValues.count * MemoryLayout<UInt16>.stride,
+                options: .storageModeShared
+            ))
+            let outputElements = shape.rows * shape.outputs
+            let suffixElements = 17
+            let outputBytes = (outputElements + suffixElements) * MemoryLayout<Float>.stride
+            let tiled = try #require(context.device.makeBuffer(
+                length: outputBytes, options: .storageModeShared
+            ))
+            let simdgroup = try #require(context.device.makeBuffer(
+                length: outputBytes, options: .storageModeShared
+            ))
+            let canary: Float = -9876.5
+            for buffer in [tiled, simdgroup] {
+                buffer.contents().assumingMemoryBound(to: Float.self)
+                    .initialize(repeating: canary, count: outputElements + suffixElements)
+            }
+            let weightOffset = prefixElements * MemoryLayout<UInt16>.stride
+            let biasOffset = hasBias
+                ? biasElementOffset * MemoryLayout<UInt16>.stride : nil
+            try kernel.linearBF16WeightsF32Output(
+                input: input, checkpoint: checkpoint, weightOffset: weightOffset,
+                biasOffset: biasOffset, rows: shape.rows, inputChannels: shape.inputs,
+                outputChannels: shape.outputs, output: tiled, implementation: .tiled
+            )
+            try kernel.linearBF16WeightsF32Output(
+                input: input, checkpoint: checkpoint, weightOffset: weightOffset,
+                biasOffset: biasOffset, rows: shape.rows, inputChannels: shape.inputs,
+                outputChannels: shape.outputs, output: simdgroup,
+                implementation: .simdgroupMatrix
+            )
+            let tiledValues = tiled.contents().assumingMemoryBound(to: Float.self)
+            let simdgroupValues = simdgroup.contents().assumingMemoryBound(to: Float.self)
+            for row in 0..<shape.rows {
+                for outputChannel in 0..<shape.outputs {
+                    var expected = hasBias ? Float(bitPattern: UInt32(checkpointValues[
+                        biasElementOffset + outputChannel
+                    ]) << 16) : 0
+                    for inputChannel in 0..<shape.inputs {
+                        let weight = Float(bitPattern: UInt32(checkpointValues[
+                            prefixElements + outputChannel * shape.inputs + inputChannel
+                        ]) << 16)
+                        expected = expected.addingProduct(
+                            inputValues[row * shape.inputs + inputChannel], weight
+                        )
+                    }
+                    let index = row * shape.outputs + outputChannel
+                    #expect(abs(tiledValues[index] - expected) <= 5e-6)
+                    #expect(abs(simdgroupValues[index] - expected) <= 5e-6)
+                    #expect(abs(simdgroupValues[index] - tiledValues[index]) <= 5e-6)
+                }
+            }
+            for index in outputElements..<(outputElements + suffixElements) {
+                #expect(tiledValues[index] == canary)
+                #expect(simdgroupValues[index] == canary)
+            }
+        }
+    }
+
+    @Test("BF16 dense automatic routing preserves the tiled fallback")
+    func bf16DenseProjectionFallbackAndDimensionBounds() throws {
+        let context = try MetalContext()
+        let fallback = try DenseKernel(context: context, enableSIMDGroupMatrix: false)
+        #expect(!fallback.supportsSIMDGroupMatrix)
+        var inputValues: [Float] = [1, -2, 0.5]
+        var checkpointValues: [UInt16] = [bf16(1), bf16(2), bf16(3)]
+        let input = try #require(context.device.makeBuffer(
+            bytes: &inputValues, length: inputValues.count * 4, options: .storageModeShared
+        ))
+        let checkpoint = try #require(context.device.makeBuffer(
+            bytes: &checkpointValues, length: checkpointValues.count * 2,
+            options: .storageModeShared
+        ))
+        let output = try #require(context.device.makeBuffer(length: 4, options: .storageModeShared))
+        try fallback.linearBF16WeightsF32Output(
+            input: input, checkpoint: checkpoint, weightOffset: 0,
+            rows: 1, inputChannels: 3, outputChannels: 1, output: output,
+            implementation: .automatic
+        )
+        #expect(abs(output.contents().assumingMemoryBound(to: Float.self)[0] - -1.5) < 1e-6)
+        #expect(throws: NativeRuntimeError.self) {
+            try fallback.linearBF16WeightsF32Output(
+                input: input, checkpoint: checkpoint, weightOffset: 0,
+                rows: 1, inputChannels: Int(UInt32.max) - 15,
+                outputChannels: 1, output: output, implementation: .tiled
+            )
+        }
+        let kernel = try DenseKernel(context: context)
+        if kernel.supportsSIMDGroupMatrix {
+            #expect(throws: NativeRuntimeError.self) {
+                try kernel.linearBF16WeightsF32Output(
+                    input: input, checkpoint: checkpoint, weightOffset: 0,
+                    rows: 1, inputChannels: Int(UInt32.max) - 7,
+                    outputChannels: 1, output: output, implementation: .simdgroupMatrix
+                )
+            }
+        }
+    }
+
     @Test("Metal timestep embedding and SiLU match CPU formulas")
     func primitiveMath() throws {
         let context = try MetalContext()
@@ -857,6 +989,83 @@ struct CheckpointTests {
                 }
             }
         }
+    }
+
+    @Test("production 4,096-token Metal attention matches sampled MPS SDPA")
+    func fusedAttentionProductionGolden() throws {
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "attention-r4096-d128-mps", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(fileSHA256(at: fixtureURL) ==
+            "96cefd6c6245983e08af9a5831638cc7d48b52222370e6d50fbf869bd570974f")
+        let metadataURL = fixtureURL.appendingPathExtension("json")
+        try #require(fileSHA256(at: metadataURL) ==
+            "d7439483e6d2094d5f714da6010d5d2afd31d4c33007d0700cabd6bad0b1f251")
+        let metadata = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL))
+                as? [String: Any]
+        )
+        #expect(metadata["source_revision"] as? String ==
+            "75fbf0183001ed9876c8dbb35de6b68552ee08bd")
+        #expect(metadata["source_sha256"] as? String ==
+            "64c43354780dcbc3dcf7612ac5e53d6e21c2081234ea63cd329a77f4185dadfc")
+        #expect(metadata["pytorch_enable_mps_fallback"] as? String == "0")
+        let sampledQueries = try #require(metadata["sampled_queries"] as? [Int])
+        let expected = try Data(contentsOf: fixtureURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        let tokens = 4096, heads = 12, dimensions = 128
+        let count = tokens * heads * dimensions
+        try #require(expected.count == sampledQueries.count * heads * dimensions)
+        func fixtureValues(multiplier: UInt32, increment: UInt32, scale: Float) -> [Float] {
+            (0..<count).map { index in
+                let bits = UInt32(truncatingIfNeeded: index) &* multiplier &+ increment
+                let value = Float(Int32(bitPattern: bits)) / Float(Int32.max) * scale
+                return fromBF16(roundedBF16(value))
+            }
+        }
+        var queries = fixtureValues(
+            multiplier: 1_664_525, increment: 1_013_904_223, scale: 1
+        )
+        var keys = fixtureValues(multiplier: 22_695_477, increment: 1, scale: 1)
+        var values = fixtureValues(
+            multiplier: 1_103_515_245, increment: 12_345, scale: 0.5
+        )
+        let context = try MetalContext()
+        let kernel = try AttentionKernel(context: context)
+        let queryBuffer = try #require(context.device.makeBuffer(
+            bytes: &queries, length: queries.count * 4, options: .storageModeShared
+        ))
+        let keyBuffer = try #require(context.device.makeBuffer(
+            bytes: &keys, length: keys.count * 4, options: .storageModeShared
+        ))
+        let valueBuffer = try #require(context.device.makeBuffer(
+            bytes: &values, length: values.count * 4, options: .storageModeShared
+        ))
+        let output = try #require(context.device.makeBuffer(
+            length: count * 4, options: .storageModeShared
+        ))
+        try kernel.fusedF32(
+            queries: queryBuffer, keys: keyBuffer, values: valueBuffer,
+            queryCount: tokens, keyCount: tokens, heads: heads,
+            dimensions: dimensions, output: output
+        )
+        let actual = output.contents().assumingMemoryBound(to: Float.self)
+        var sampledActual: [Float] = []
+        sampledActual.reserveCapacity(expected.count)
+        for query in sampledQueries {
+            let start = query * heads * dimensions
+            sampledActual += (0..<(heads * dimensions)).map { actual[start + $0] }
+        }
+        let metrics = try compareFixtureValues(actual: sampledActual, expected: expected)
+        print(
+            "production attention: max=\(metrics.maximumError) rms=\(metrics.rms) " +
+                "normalized_rms=\(metrics.normalizedRMS) " +
+                "max_scale_ratio=\(metrics.maximumScaleRatio)"
+        )
+        #expect(metrics.normalizedRMS <= 0.005)
+        #expect(metrics.maximumScaleRatio <= 0.01)
     }
 
     @Test("Metal segmented attention isolates sparse samples")
@@ -2309,6 +2518,362 @@ struct CheckpointTests {
         // to zero after subtracting the guided velocity from the input noise.
         #expect(finalMetrics.maximumError <= 0.25)
         #expect(finalMetrics.rms <= 0.05)
+    }
+
+    @Test("production sparse CFG arithmetic matches the one-step MPS oracle")
+    func sparseStructureCFGProductionGolden() throws {
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "ss-sampler-r16-1step-mps", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(fileSHA256(at: fixtureURL) ==
+            "9c7cd37e4c3abe1575ba93b1afbb3bee12e8d5295d8905a113bd13a2f0b50936")
+        let fixture = try Data(contentsOf: fixtureURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        let latentCount = 16 * 16 * 16 * 8
+        let contextCount = 1029 * 1024
+        let traceStart = latentCount + contextCount
+        let noise = Array(fixture[..<latentCount])
+        let positive = Array(fixture[traceStart..<(traceStart + latentCount)])
+        let negative = Array(
+            fixture[(traceStart + latentCount)..<(traceStart + latentCount * 2)]
+        )
+        let expected = Array(fixture[(traceStart + latentCount * 2)...])
+        let actual = oneStepSparseSamplerReference(
+            noise: noise, positive: positive, negative: negative
+        )
+        let metrics = try compareFixtureValues(actual: actual, expected: expected)
+        print(
+            "sparse CFG oracle-only: max=\(metrics.maximumError) rms=\(metrics.rms) " +
+                "normalized_rms=\(metrics.normalizedRMS) " +
+                "max_scale_ratio=\(metrics.maximumScaleRatio)"
+        )
+        #expect(metrics.maximumError <= 1e-5)
+        #expect(metrics.rms <= 1e-6)
+    }
+
+    @Test(
+        "full 12-step sparse trajectory hands off to the production decoder",
+        .enabled(
+            if: ProcessInfo.processInfo.environment[
+                "KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT"
+            ] != nil && ProcessInfo.processInfo.environment[
+                "KG_TRELLIS2_SPARSE_STRUCTURE_DECODER_CHECKPOINT"
+            ] != nil,
+            "Set both sparse-structure checkpoint variables for full trajectory conformance"
+        )
+    )
+    func realSparseStructureFullTrajectoryAndHandoffGolden() throws {
+        let flowPath = try #require(ProcessInfo.processInfo.environment[
+            "KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT"
+        ])
+        let decoderPath = try #require(ProcessInfo.processInfo.environment[
+            "KG_TRELLIS2_SPARSE_STRUCTURE_DECODER_CHECKPOINT"
+        ])
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "ss-full-r16-12step-mps", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: fixtureURL) ==
+                "8bf56697d1c2cd76758d36b92350dfa4ef305e86e75e8344784327a6a9143fd5"
+        )
+        let metadataURL = fixtureURL.appendingPathExtension("json")
+        try #require(
+            fileSHA256(at: metadataURL) ==
+                "fde7f7bdd9e685a76b5124b565e2f2785bfb13aa38acf21c09b2ed8009bcaa86"
+        )
+        let metadata = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL))
+                as? [String: Any]
+        )
+        #expect(metadata["source_revision"] as? String ==
+            "75fbf0183001ed9876c8dbb35de6b68552ee08bd")
+        #expect(metadata["flow_weight_revision"] as? String ==
+            "af44b45f2e35a493886929c6d786e563ec68364d")
+        #expect(metadata["flow_weight_sha256"] as? String ==
+            "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6")
+        #expect(metadata["decoder_weight_revision"] as? String ==
+            "25e0d31ffbebe4b5a97464dd851910efc3002d96")
+        #expect(metadata["decoder_weight_sha256"] as? String ==
+            "1c76d4a40519aa2d711cc263a8404105231ac26db31d946bed48b84fee79009a")
+        #expect(metadata["steps"] as? Int == 12)
+        #expect(metadata["model_calls"] as? Int == 22)
+        #expect(metadata["occupancy_count"] as? Int == 91_584)
+        let sourceFiles = try #require(metadata["source_files"] as? [String: String])
+        #expect(sourceFiles == [
+            "trellis2/models/sparse_structure_flow.py":
+                "52182c80687e6544d97fc0fcbede738503623376ba29349004d7cc796c6b8efa",
+            "trellis2/models/sparse_structure_vae.py":
+                "d32e4490b2f5356b72229ee7c8fb25702238b4f0877c49f1cae15ddc9ca615bc",
+            "trellis2/pipelines/samplers/flow_euler.py":
+                "b4bd235874adfc47fd3bce3d596249b1ccfa6644983a9b4562c9295a463bc0fd",
+            "trellis2/pipelines/samplers/classifier_free_guidance_mixin.py":
+                "1780182cd7d3c7af3f82b7904aa9c40eb3f632064d77456565c5acccd9598bee",
+            "trellis2/pipelines/samplers/guidance_interval_mixin.py":
+                "633f97c48a811a835d3b894b3e0de794407f60774f6c60a2c6a61e7c0351c6f2",
+        ])
+        let fixture = try Data(contentsOf: fixtureURL)
+        func range(_ name: String) throws -> [Int] {
+            let value = try #require(metadata[name] as? [Int])
+            try #require(value.count == 2 && value[0] >= 0 && value[1] >= value[0])
+            try #require(value[1] <= fixture.count)
+            return value
+        }
+        func floats(_ name: String) throws -> [Float] {
+            let value = try range(name)
+            try #require((value[1] - value[0]).isMultiple(of: MemoryLayout<Float>.stride))
+            return fixture.subdata(in: value[0]..<value[1]).withUnsafeBytes {
+                Array($0.bindMemory(to: Float.self))
+            }
+        }
+        let tokens = 16 * 16 * 16
+        let latentCount = tokens * 8
+        let contextTokens = 1029
+        var noise = try floats("input_range")
+        var positive = try floats("context_range")
+        var negative = [Float](repeating: 0, count: positive.count)
+        let expectedStates = try floats("state_trace_range")
+        let expectedFinal = try floats("final_latent_range")
+        let expectedLogits = try floats("logits_range")
+        try #require(noise.count == latentCount)
+        try #require(positive.count == contextTokens * 1024)
+        try #require(expectedStates.count == 12 * latentCount)
+        try #require(expectedFinal.count == latentCount)
+        try #require(expectedLogits.count == 64 * 64 * 64)
+        #expect(Array(expectedStates.suffix(latentCount)) == expectedFinal)
+
+        var flowLifecycle: [StageLifecycleEvent] = []
+        let flowSession = try StageSession(
+            checkpointURL: URL(fileURLWithPath: flowPath),
+            expectedCheckpointSHA256:
+                "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6",
+            arenaCapacity: 768 * 1024 * 1024,
+            lifecycleObserver: { flowLifecycle.append($0) }
+        )
+        let noiseBuffer = try #require(flowSession.device.makeBuffer(
+            bytes: &noise, length: noise.count * 4, options: .storageModeShared
+        ))
+        let positiveBuffer = try #require(flowSession.device.makeBuffer(
+            bytes: &positive, length: positive.count * 4, options: .storageModeShared
+        ))
+        let negativeBuffer = try #require(flowSession.device.makeBuffer(
+            bytes: &negative, length: negative.count * 4, options: .storageModeShared
+        ))
+        var nativeStates: [[Float]] = []
+        let flowStarted = ContinuousClock.now
+        let sample = try flowSession.sampleSparseStructureF32(
+            noise: noiseBuffer,
+            positiveConditioning: positiveBuffer,
+            negativeConditioning: negativeBuffer,
+            conditioningTokens: contextTokens,
+            parameters: .sparseStructure512(),
+            samplerTrace: { step, state in
+                #expect(step == nativeStates.count)
+                nativeStates.append(state)
+            }
+        )
+        let flowElapsed = flowStarted.duration(to: .now)
+        #expect(sample.modelCallCount == 22)
+        try #require(nativeStates.count == 12)
+        let flowMemory = try flowSession.close()
+        #expect(flowMemory.usedBytes == 0)
+        #expect(flowMemory.peakUsedBytes <= 600 * 1024 * 1024)
+        #expect(flowLifecycle == [.queueDrained, .arenaReleased, .checkpointUnmapped])
+        for step in 0..<12 {
+            let expected = Array(
+                expectedStates[(step * latentCount)..<((step + 1) * latentCount)]
+            )
+            let metrics = try compareFixtureValues(
+                actual: nativeStates[step], expected: expected
+            )
+            print(
+                "sparse full step=\(step) max=\(metrics.maximumError) " +
+                    "rms=\(metrics.rms) normalized_rms=\(metrics.normalizedRMS) " +
+                    "max_scale_ratio=\(metrics.maximumScaleRatio)"
+            )
+            if step <= 4 {
+                #expect(metrics.normalizedRMS <= 0.10)
+                #expect(metrics.maximumScaleRatio <= 0.20)
+            }
+        }
+        let nativeFinalPointer = sample.latent.contents().assumingMemoryBound(to: Float.self)
+        let nativeFinal = (0..<latentCount).map { nativeFinalPointer[$0] }
+        let finalMetrics = try compareFixtureValues(
+            actual: nativeFinal, expected: expectedFinal
+        )
+
+        var decoderLifecycle: [StageLifecycleEvent] = []
+        let decoderSession = try StageSession(
+            checkpointURL: URL(fileURLWithPath: decoderPath),
+            expectedCheckpointSHA256:
+                "1c76d4a40519aa2d711cc263a8404105231ac26db31d946bed48b84fee79009a",
+            arenaCapacity: 512 * 1024 * 1024,
+            lifecycleObserver: { decoderLifecycle.append($0) }
+        )
+        let decoderStarted = ContinuousClock.now
+        let decoded = try decoderSession.decodeSparseStructureF32(latent: sample.latent)
+        let decoderElapsed = decoderStarted.duration(to: .now)
+        let decoderMemory = try decoderSession.close()
+        #expect(decoderMemory.usedBytes == 0)
+        #expect(decoderMemory.peakUsedBytes <= 256 * 1024 * 1024)
+        #expect(decoderLifecycle == [.queueDrained, .arenaReleased, .checkpointUnmapped])
+        let actualLogitsPointer = decoded.logits.contents().assumingMemoryBound(to: Float.self)
+        let actualLogits = (0..<expectedLogits.count).map { actualLogitsPointer[$0] }
+        let logitsMetrics = try compareFixtureValues(
+            actual: actualLogits, expected: expectedLogits
+        )
+        let occupancyRange = try range("occupancy_range")
+        let expectedOccupancy = try SparseOccupancyGrid(
+            resolution: 64,
+            packedBits: Array(fixture[occupancyRange[0]..<occupancyRange[1]])
+        )
+        var intersection = 0
+        var union = 0
+        var actualOccupancyCount = 0
+        for index in expectedOccupancy.packedBits.indices {
+            intersection += Int(
+                expectedOccupancy.packedBits[index]
+                    & decoded.occupancy.packedBits[index]
+            ).nonzeroBitCount
+            union += Int(
+                expectedOccupancy.packedBits[index]
+                    | decoded.occupancy.packedBits[index]
+            ).nonzeroBitCount
+            actualOccupancyCount += Int(
+                decoded.occupancy.packedBits[index]
+            ).nonzeroBitCount
+        }
+        let occupancyIOU = Double(intersection) / Double(union)
+        let occupancyCountRatio = Double(actualOccupancyCount) / 91_584
+        print(
+            "sparse full handoff: calls=\(sample.modelCallCount) " +
+                "flow_elapsed=\(flowElapsed) decoder_elapsed=\(decoderElapsed) " +
+                "final_normalized_rms=\(finalMetrics.normalizedRMS) " +
+                "logits_normalized_rms=\(logitsMetrics.normalizedRMS) " +
+                "occupancy_iou=\(occupancyIOU) occupancy_count=\(actualOccupancyCount) " +
+                "occupancy_count_ratio=\(occupancyCountRatio) " +
+                "flow_peak=\(flowMemory.peakUsedBytes) " +
+                "decoder_peak=\(decoderMemory.peakUsedBytes)"
+        )
+        // The teacher-forced test bounds the model itself at every sampled
+        // trajectory region. This separate gate is a same-seed structural
+        // stability sentinel after 22 BF16 calls, where feedback makes exact
+        // cross-backend tensors and occupancy non-invariant.
+        #expect(occupancyIOU >= 0.70)
+        #expect(occupancyCountRatio >= 0.70 && occupancyCountRatio <= 1.30)
+        #expect(!decoded.coordinates.isEmpty)
+    }
+
+    @Test(
+        "sparse flow remains conformant on teacher-forced late trajectory states",
+        .enabled(
+            if: ProcessInfo.processInfo.environment[
+                "KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT"
+            ] != nil,
+            "Set KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT for teacher-forced conformance"
+        )
+    )
+    func realSparseStructureTeacherForcedTrajectoryGolden() throws {
+        let path = try #require(ProcessInfo.processInfo.environment[
+            "KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT"
+        ])
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "ss-full-r16-12step-mps", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(fileSHA256(at: fixtureURL) ==
+            "8bf56697d1c2cd76758d36b92350dfa4ef305e86e75e8344784327a6a9143fd5")
+        let metadataURL = fixtureURL.appendingPathExtension("json")
+        try #require(fileSHA256(at: metadataURL) ==
+            "fde7f7bdd9e685a76b5124b565e2f2785bfb13aa38acf21c09b2ed8009bcaa86")
+        let metadata = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL))
+                as? [String: Any]
+        )
+        let fixture = try Data(contentsOf: fixtureURL)
+        func floats(_ name: String) throws -> [Float] {
+            let range = try #require(metadata[name] as? [Int])
+            try #require(range.count == 2 && range[0] >= 0 && range[1] <= fixture.count)
+            return fixture.subdata(in: range[0]..<range[1]).withUnsafeBytes {
+                Array($0.bindMemory(to: Float.self))
+            }
+        }
+        let tokens = 16 * 16 * 16
+        let latentCount = tokens * 8
+        let contextTokens = 1029
+        let noise = try floats("input_range")
+        let conditioning = try floats("context_range")
+        let states = try floats("state_trace_range")
+        let modelOutputs = try floats("model_trace_range")
+        let timesteps = try #require(metadata["model_timesteps"] as? [Double])
+        try #require(states.count == 12 * latentCount)
+        try #require(modelOutputs.count == 22 * latentCount)
+        try #require(timesteps.count == 22)
+        let context = try MetalContext()
+        let checkpoint = try MappedCheckpoint(
+            url: URL(fileURLWithPath: path), device: context.device
+        )
+        try #require(checkpoint.sha256() ==
+            "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6")
+        var conditioningValues = conditioning
+        let conditioningBuffer = try #require(context.device.makeBuffer(
+            bytes: &conditioningValues, length: conditioningValues.count * 4,
+            options: .storageModeShared
+        ))
+        var coordinates: [Int32] = []
+        coordinates.reserveCapacity(tokens * 4)
+        for x in 0..<16 {
+            for y in 0..<16 {
+                for z in 0..<16 {
+                    coordinates.append(contentsOf: [0, Int32(x), Int32(y), Int32(z)])
+                }
+            }
+        }
+        let coordinateBuffer = try #require(context.device.makeBuffer(
+            bytes: &coordinates, length: coordinates.count * 4,
+            options: .storageModeShared
+        ))
+        let flow = try SLatFlow(context: context, configuration: .sparseStructure)
+        let probes: [(call: Int, precedingState: Int?)] = [
+            (0, nil), (8, 3), (16, 7), (21, 10),
+        ]
+        for probe in probes {
+            var inputValues = probe.precedingState.map { step in
+                Array(states[(step * latentCount)..<((step + 1) * latentCount)])
+            } ?? noise
+            var timestep = Float(timesteps[probe.call])
+            let inputBuffer = try #require(context.device.makeBuffer(
+                bytes: &inputValues, length: inputValues.count * 4,
+                options: .storageModeShared
+            ))
+            let timestepBuffer = try #require(context.device.makeBuffer(
+                bytes: &timestep, length: 4, options: .storageModeShared
+            ))
+            let output = try flow.forwardF32(
+                input: inputBuffer, timestep: timestepBuffer,
+                conditioning: conditioningBuffer, coordinates: coordinateBuffer,
+                checkpoint: checkpoint, tokens: tokens,
+                conditioningTokens: contextTokens
+            )
+            let pointer = output.contents().assumingMemoryBound(to: Float.self)
+            let actual = (0..<latentCount).map { pointer[$0] }
+            let expected = Array(
+                modelOutputs[(probe.call * latentCount)..<((probe.call + 1) * latentCount)]
+            )
+            let metrics = try compareFixtureValues(actual: actual, expected: expected)
+            print(
+                "sparse teacher call=\(probe.call) timestep=\(timestep) " +
+                    "max=\(metrics.maximumError) rms=\(metrics.rms) " +
+                    "normalized_rms=\(metrics.normalizedRMS) " +
+                    "max_scale_ratio=\(metrics.maximumScaleRatio)"
+            )
+            // Each probe supplies the exact oracle state, separating model
+            // conformance from feedback sensitivity across denoising steps.
+            #expect(metrics.normalizedRMS <= 0.02)
+            #expect(metrics.maximumScaleRatio <= 0.05)
+        }
     }
 
     @Test(

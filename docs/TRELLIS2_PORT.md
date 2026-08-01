@@ -58,14 +58,14 @@ settings for all eight 512 components are machine-readable in
 | Metal memory arena | Verified native foundation | Hard heap capacity, overflow rejection, and current/peak/cumulative allocation evidence across both sampler integrations |
 | Stage lifecycle | Verified native foundation | Queue drain, zero live arena bytes, arena destruction, observed checkpoint unmap, error-path cleanup, and standalone outputs |
 | Sparse-structure block | Verified native Metal slice | Real dense-flow block 0, 128-wide SIMD-group attention, 3D RoPE, and authenticated BF16 stage trace |
-| Sparse-structure production flow | Verified native production slice | One `.sparseStructure512` step, 4,096 tokens, 1,029 context tokens, two CFG calls, all 30 blocks, at most `0.00923` model-call normalized RMS, 525 MiB peak arena |
+| Sparse-structure production flow | Verified native 12-step execution; drift disclosed | All 22 calls at 4,096 tokens; teacher-forced probes stay below `0.01376` normalized RMS, free-running occupancy reaches `0.7208` IoU, and the arena peaks at 555,905,112 bytes |
 | Sparse occupancy decoder | Verified native Metal stage | All 74 real tensors at production 16-to-64 size, exact occupancy parity, `0.000181` normalized RMS, 224 MiB peak arena |
 | Occupancy extraction | Verified native Swift | Strict threshold, bit packing, ordered coordinates, and exact 2x pooling |
 | Morton coding | Verified native Metal | Bit-exact differential and randomized round trips |
 | UV raster | Verified analytic Metal slice | Physical render, analytic coverage/interpolation; nvdiffrast CUDA goldens pending |
 | PBR bake | Experimental reference | Synthetic component tests and GLB reload; upstream mesh semantics pending |
 | Existing-mesh texturing | In progress | Staged reference orchestration exists; complete artifact proof pending |
-| Full Swift + Metal model | In progress | Complete DINO, both SLat flows, one production sparse step, and the production sparse decoder pass; image preprocessing, full sparse trajectory, remaining decoders, mesh extraction, and PBR assembly remain |
+| Full Swift + Metal model | In progress | Complete DINO, both SLat graphs, the 12-step sparse trajectory, and decoder handoff execute natively; image preprocessing, production shape/texture runs, remaining decoders, mesh extraction, and PBR assembly remain |
 
 ## What The Reference Run Does
 
@@ -223,14 +223,15 @@ against pinned upstream outputs.
 
 1. Reproduce alpha-aware crop, Lanczos resize, RGB conversion, and ImageNet
    normalization in the native image loader.
-2. Extend the verified 4,096-token one-step sparse sampler to the complete
-   12-step trajectory and prove its handoff into the production 16-to-64
-   decoder. Block compatibility, decoder primitives, thresholding, pooling,
-   and production 32-grid coordinates now pass on physical Metal.
-3. Complete shape and texture VAE stages and six-channel PBR decoding.
+2. Carry the verified production 32-grid coordinates through a full native
+   12-step shape flow, then the shared sparse shape decoder and flexible dual
+   grid mesh extraction.
+3. Reuse the sparse decoder backbone for six-channel PBR texture decoding.
 4. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.
-5. Run existing-mesh texturing end to end with preserved and regenerated UVs.
-6. Profile only after parity, then optimize the measured bottlenecks.
+5. Run existing-mesh texturing end to end. Upstream parity regenerates UVs;
+   preserving supplied UVs remains an explicit KernelGoblin extension.
+6. Continue optimizing measured dense and attention bottlenecks without
+   weakening the teacher-forced conformance gates.
 
 For the production package and memory contracts, continue with
 [`NATIVE_TRELLIS2_ARCHITECTURE.md`](NATIVE_TRELLIS2_ARCHITECTURE.md).

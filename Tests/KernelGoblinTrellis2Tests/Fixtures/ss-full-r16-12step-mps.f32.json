@@ -1,0 +1,93 @@
+{
+  "format": "KernelGoblin TRELLIS.2 full sparse trajectory and handoff oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "source_files": {
+    "trellis2/models/sparse_structure_flow.py": "52182c80687e6544d97fc0fcbede738503623376ba29349004d7cc796c6b8efa",
+    "trellis2/models/sparse_structure_vae.py": "d32e4490b2f5356b72229ee7c8fb25702238b4f0877c49f1cae15ddc9ca615bc",
+    "trellis2/pipelines/samplers/flow_euler.py": "b4bd235874adfc47fd3bce3d596249b1ccfa6644983a9b4562c9295a463bc0fd",
+    "trellis2/pipelines/samplers/classifier_free_guidance_mixin.py": "1780182cd7d3c7af3f82b7904aa9c40eb3f632064d77456565c5acccd9598bee",
+    "trellis2/pipelines/samplers/guidance_interval_mixin.py": "633f97c48a811a835d3b894b3e0de794407f60774f6c60a2c6a61e7c0351c6f2"
+  },
+  "flow_weight_revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+  "flow_weight_sha256": "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6",
+  "decoder_weight_revision": "25e0d31ffbebe4b5a97464dd851910efc3002d96",
+  "decoder_weight_sha256": "1c76d4a40519aa2d711cc263a8404105231ac26db31d946bed48b84fee79009a",
+  "device": "mps",
+  "torch_version": "2.13.0",
+  "safetensors_version": "0.7.0",
+  "cpu_fallback_enabled": false,
+  "resolution": 16,
+  "tokens": 4096,
+  "context_tokens": 1029,
+  "steps": 12,
+  "model_calls": 22,
+  "model_timesteps": [
+    1000.0,
+    1000.0,
+    982.1428571428572,
+    982.1428571428572,
+    961.5384615384614,
+    961.5384615384614,
+    937.5,
+    937.5,
+    909.0909090909091,
+    909.0909090909091,
+    875.0,
+    875.0,
+    833.3333333333334,
+    833.3333333333334,
+    781.2500000000001,
+    781.2500000000001,
+    714.2857142857144,
+    714.2857142857144,
+    625.0,
+    625.0,
+    500.0000000000001,
+    312.5000000000001
+  ],
+  "rescale_t": 5.0,
+  "guidance_strength": 7.5,
+  "guidance_rescale": 0.7,
+  "guidance_interval": [
+    0.6,
+    1.0
+  ],
+  "coordinate_order": "(x * 16 + y) * 16 + z; z-fast",
+  "input_formula": "f32(sin(i * 0.021) * 0.30)",
+  "context_formula": "f32(sin(i * 0.015) * 0.25)",
+  "input_range": [
+    0,
+    131072
+  ],
+  "context_range": [
+    131072,
+    4345856
+  ],
+  "model_trace_range": [
+    4345856,
+    7229440
+  ],
+  "model_trace_layout": "22 consecutive token-major [4096,8] F32 model outputs",
+  "state_trace_range": [
+    7229440,
+    8802304
+  ],
+  "state_trace_layout": "12 consecutive token-major [4096,8] F32 post-step states",
+  "final_latent_range": [
+    8802304,
+    8933376
+  ],
+  "logits_range": [
+    8933376,
+    9981952
+  ],
+  "occupancy_range": [
+    9981952,
+    10014720
+  ],
+  "occupancy_bit_order": "little; flat x-major/y-middle/z-fast 64-cubed grid",
+  "occupancy_count": 91584,
+  "stage_boundary": "flow tensors copied to CPU before model release and decoder load",
+  "payload_sha256": "8bf56697d1c2cd76758d36b92350dfa4ef305e86e75e8344784327a6a9143fd5",
+  "oracle": "pinned Torch flow sampler, explicit stage release, then pinned decoder"
+}

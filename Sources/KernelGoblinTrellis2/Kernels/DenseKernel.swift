@@ -1,5 +1,11 @@
 import Metal
 
+public enum BF16LinearImplementation: Sendable {
+    case automatic
+    case tiled
+    case simdgroupMatrix
+}
+
 public final class DenseKernel: @unchecked Sendable {
     private struct LinearF32Parameters {
         var weightOffset: UInt64
@@ -13,9 +19,10 @@ public final class DenseKernel: @unchecked Sendable {
     private let context: MetalContext
     private let linearF32Pipeline: MTLComputePipelineState
     private let linearBF16WeightsPipeline: MTLComputePipelineState
+    private let linearBF16SIMDGroupPipeline: MTLComputePipelineState?
     private static let tileSize = 16
 
-    public init(context: MetalContext) throws {
+    public init(context: MetalContext, enableSIMDGroupMatrix: Bool = true) throws {
         self.context = context
         let library = try context.library(named: "identity")
         guard let function = library.makeFunction(name: "kg_linear_tiled_f32") else {
@@ -34,7 +41,28 @@ public final class DenseKernel: @unchecked Sendable {
         self.linearBF16WeightsPipeline = try context.device.makeComputePipelineState(
             function: bf16Function
         )
+        do {
+            guard enableSIMDGroupMatrix else {
+                self.linearBF16SIMDGroupPipeline = nil
+                return
+            }
+            let simdLibrary = try context.library(named: "dense_simdgroup")
+            guard let function = simdLibrary.makeFunction(
+                name: "kg_linear_simdgroup_bf16_weights_f32_output"
+            ) else {
+                throw NativeRuntimeError.invalidArgument(
+                    "kg_linear_simdgroup_bf16_weights_f32_output is missing from Metal library"
+                )
+            }
+            self.linearBF16SIMDGroupPipeline = try context.device.makeComputePipelineState(
+                function: function
+            )
+        } catch {
+            self.linearBF16SIMDGroupPipeline = nil
+        }
     }
+
+    public var supportsSIMDGroupMatrix: Bool { linearBF16SIMDGroupPipeline != nil }
 
     public func linearF32(
         input: MTLBuffer,
@@ -68,11 +96,38 @@ public final class DenseKernel: @unchecked Sendable {
         rows: Int,
         inputChannels: Int,
         outputChannels: Int,
-        output: MTLBuffer
+        output: MTLBuffer,
+        implementation: BF16LinearImplementation = .automatic
     ) throws {
+        let selectedPipeline: MTLComputePipelineState
+        let usesSIMDGroupMatrix: Bool
+        switch implementation {
+        case .automatic:
+            // A single row does not amortize the cooperative matrix setup on
+            // Apple M3. Keep tiny conditioning projections on the tiled path.
+            if rows >= 8, let linearBF16SIMDGroupPipeline {
+                selectedPipeline = linearBF16SIMDGroupPipeline
+                usesSIMDGroupMatrix = true
+            } else {
+                selectedPipeline = linearBF16WeightsPipeline
+                usesSIMDGroupMatrix = false
+            }
+        case .tiled:
+            selectedPipeline = linearBF16WeightsPipeline
+            usesSIMDGroupMatrix = false
+        case .simdgroupMatrix:
+            guard let linearBF16SIMDGroupPipeline else {
+                throw NativeRuntimeError.invalidArgument(
+                    "Metal device cannot create the SIMD-group matrix dense pipeline"
+                )
+            }
+            selectedPipeline = linearBF16SIMDGroupPipeline
+            usesSIMDGroupMatrix = true
+        }
         try linear(
-            pipeline: linearBF16WeightsPipeline,
+            pipeline: selectedPipeline,
             elementWidth: MemoryLayout<UInt16>.stride,
+            simdgroupMatrix: usesSIMDGroupMatrix,
             input: input,
             checkpoint: checkpoint,
             weightOffset: weightOffset,
@@ -87,6 +142,7 @@ public final class DenseKernel: @unchecked Sendable {
     private func linear(
         pipeline: MTLComputePipelineState,
         elementWidth: Int,
+        simdgroupMatrix: Bool = false,
         input: MTLBuffer,
         checkpoint: MTLBuffer,
         weightOffset: Int,
@@ -99,6 +155,15 @@ public final class DenseKernel: @unchecked Sendable {
         guard rows > 0, inputChannels > 0, outputChannels > 0,
               weightOffset >= 0, biasOffset.map({ $0 >= 0 }) ?? true else {
             throw NativeRuntimeError.invalidArgument("linear dimensions and offsets must be positive")
+        }
+        let tile = simdgroupMatrix ? 8 : Self.tileSize
+        guard rows <= Int(UInt32.max),
+              inputChannels <= Int(UInt32.max) - tile,
+              outputChannels <= Int(UInt32.max),
+              fitsUInt32Product(rows, outputChannels),
+              fitsUInt32Product(rows, inputChannels),
+              fitsUInt32Product(outputChannels, inputChannels) else {
+            throw NativeRuntimeError.invalidArgument("linear dimensions exceed Metal UInt32 indexing")
         }
         let inputBytes = try checkedBytes(rows, inputChannels, MemoryLayout<Float>.stride)
         let weightBytes = try checkedBytes(outputChannels, inputChannels, elementWidth)
@@ -116,13 +181,6 @@ public final class DenseKernel: @unchecked Sendable {
         else {
             throw NativeRuntimeError.invalidArgument("linear buffers or tensor alignment are invalid")
         }
-        guard rows <= Int(UInt32.max), inputChannels <= Int(UInt32.max),
-              outputChannels <= Int(UInt32.max),
-              fitsUInt32Product(rows, outputChannels),
-              fitsUInt32Product(rows, inputChannels),
-              fitsUInt32Product(outputChannels, inputChannels) else {
-            throw NativeRuntimeError.invalidArgument("linear dimensions exceed Metal UInt32 indexing")
-        }
         var parameters = LinearF32Parameters(
             weightOffset: UInt64(weightOffset),
             biasOffset: UInt64(biasOffset ?? weightOffset),
@@ -139,8 +197,9 @@ public final class DenseKernel: @unchecked Sendable {
             encoder.setBytes(
                 &parameters, length: MemoryLayout<LinearF32Parameters>.stride, index: 3
             )
-            let tile = Self.tileSize
-            guard pipeline.maxTotalThreadsPerThreadgroup >= tile * tile else {
+            let threads = simdgroupMatrix ? 32 : tile * tile
+            guard pipeline.maxTotalThreadsPerThreadgroup >= threads,
+                  !simdgroupMatrix || pipeline.threadExecutionWidth == 32 else {
                 throw NativeRuntimeError.invalidArgument(
                     "Metal device cannot dispatch the required dense tile"
                 )
@@ -151,7 +210,9 @@ public final class DenseKernel: @unchecked Sendable {
                     height: (rows + tile - 1) / tile,
                     depth: 1
                 ),
-                threadsPerThreadgroup: MTLSize(width: tile, height: tile, depth: 1)
+                threadsPerThreadgroup: simdgroupMatrix
+                    ? MTLSize(width: threads, height: 1, depth: 1)
+                    : MTLSize(width: tile, height: tile, depth: 1)
             )
         }
     }
