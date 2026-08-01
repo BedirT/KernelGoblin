@@ -27,11 +27,18 @@ TRELLIS_NATIVE_TARGETS = {
 }
 TRELLIS_NATIVE_IMPORTS = {
     "CoreFoundation",
+    "CoreGraphics",
+    "CoreVideo",
     "CryptoKit",
     "Darwin",
     "Foundation",
+    "ImageIO",
     "KernelGoblinTrellis2",
     "Metal",
+    "ModelIO",
+    "UniformTypeIdentifiers",
+    "Vision",
+    "simd",
 }
 TRELLIS_FORBIDDEN_RUNTIME_APIS = (
     re.compile(r"\bProcess\s*[.(]"),
@@ -203,7 +210,7 @@ def command_validate(_: argparse.Namespace) -> None:
         expected_id = path.parent.name
         for field in (
             "id", "model", "description", "production_runtime",
-            "reference_runtime", "platforms",
+            "oracle_runtime", "platforms",
         ):
             if not model.get(field):
                 errors.append(f"{path}: missing {field}")
@@ -285,10 +292,30 @@ def trellis_python() -> Path:
     return ROOT / "build" / "trellis2" / ".venv" / "bin" / "python"
 
 
-def command_model_setup(args: argparse.Namespace) -> None:
+def command_model_oracle_setup(args: argparse.Namespace) -> None:
     if args.model != "trellis2":
         raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
     run([sys.executable, str(ROOT / "ports" / "trellis2" / "setup_runtime.py")])
+
+
+def native_trellis_executable() -> Path:
+    run(["swift", "build", "-c", "release", "--product", "kg-trellis2"])
+    result = subprocess.run(
+        ["swift", "build", "-c", "release", "--show-bin-path"],
+        cwd=ROOT, check=True, capture_output=True, text=True,
+    )
+    return Path(result.stdout.strip()) / "kg-trellis2"
+
+
+def command_model_setup(args: argparse.Namespace) -> None:
+    if args.model != "trellis2":
+        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    command = [str(native_trellis_executable()), "install"]
+    if getattr(args, "root", None):
+        command.extend(["--root", args.root])
+    if getattr(args, "feature", None):
+        command.extend(["--feature", args.feature])
+    run(command)
 
 
 def command_model_native_setup(args: argparse.Namespace) -> None:
@@ -369,6 +396,17 @@ def command_model_native_test(args: argparse.Namespace) -> None:
             "native TRELLIS.2 conformance requires the pinned texture decoder; "
             "pass --texture-decoder-checkpoint FILE.safetensors"
         )
+    shape_encoder_checkpoint = (
+        Path(args.shape_encoder_checkpoint).expanduser().resolve()
+        if args.shape_encoder_checkpoint else (
+            checkpoint.parent / "shape_enc_next_dc_f16c32_fp16.safetensors"
+        )
+    )
+    if not shape_encoder_checkpoint.is_file():
+        raise SystemExit(
+            "native TRELLIS.2 conformance requires the pinned shape encoder; "
+            "pass --shape-encoder-checkpoint FILE.safetensors"
+        )
     dino_checkpoint = (
         Path(args.dino_checkpoint).expanduser().resolve() if args.dino_checkpoint else (
             Path.home() / ".cache" / "huggingface" / "hub"
@@ -392,6 +430,7 @@ def command_model_native_test(args: argparse.Namespace) -> None:
     )
     environment["KG_TRELLIS2_SHAPE_DECODER_CHECKPOINT"] = str(shape_decoder_checkpoint)
     environment["KG_TRELLIS2_TEXTURE_DECODER_CHECKPOINT"] = str(texture_decoder_checkpoint)
+    environment["KG_TRELLIS2_SHAPE_ENCODER_CHECKPOINT"] = str(shape_encoder_checkpoint)
     environment["KG_TRELLIS2_DINO_CHECKPOINT"] = str(dino_checkpoint)
     # Physical GPU conformance and memory peaks are not meaningful when the
     # heavyweight stage tests contend on independent Metal queues.
@@ -468,12 +507,16 @@ def command_model_native_audit(args: argparse.Namespace) -> None:
     )
 
 
-def command_model_test(args: argparse.Namespace) -> None:
-    command_model_setup(args)
+def command_model_oracle_test(args: argparse.Namespace) -> None:
+    command_model_oracle_setup(args)
     run([
         str(trellis_python()), "-m", "unittest", "discover",
         "-s", "ports/trellis2/tests", "-v",
     ])
+
+
+def command_model_test(args: argparse.Namespace) -> None:
+    command_model_native_test(args)
 
 
 def command_model_native_benchmark(args: argparse.Namespace) -> None:
@@ -485,11 +528,22 @@ def command_model_native_benchmark(args: argparse.Namespace) -> None:
     ])
 
 
-def command_model_run(args: argparse.Namespace) -> None:
+def command_model_native_pbr_benchmark(args: argparse.Namespace) -> None:
+    if args.model != "trellis2":
+        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    run([
+        "swift", "run", "-c", "release", "kg-trellis2-pbr-bake-bench",
+        "--texture-size", str(args.texture_size),
+        "--resolution", str(args.resolution),
+        "--warmup", str(args.warmup), "--iterations", str(args.iterations),
+    ])
+
+
+def command_model_oracle_run(args: argparse.Namespace) -> None:
     if args.model != "trellis2":
         raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
     if not trellis_python().is_file():
-        command_model_setup(args)
+        command_model_oracle_setup(args)
     command = [
         str(trellis_python()), str(ROOT / "ports" / "trellis2" / "run.py"),
         "--input", args.input, "--output", args.output, "--seed", str(args.seed),
@@ -509,11 +563,40 @@ def command_model_run(args: argparse.Namespace) -> None:
     run(command)
 
 
-def command_model_texture(args: argparse.Namespace) -> None:
+def command_model_run(args: argparse.Namespace) -> None:
+    if args.model != "trellis2":
+        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    if args.pipeline_type != "512":
+        raise SystemExit(
+            "the native production coordinator currently accepts --pipeline-type 512; "
+            "use `./kg model oracle-run trellis2` only when explicitly comparing upstream"
+        )
+    command = [
+        str(native_trellis_executable()), "generate",
+        "--input", args.input, "--output", args.output,
+        "--seed", str(args.seed), "--texture-size", str(args.texture_size),
+        "--alpha-mode", args.alpha_mode,
+    ]
+    if args.steps is not None:
+        command.extend(["--steps", str(args.steps)])
+    if args.accept_opaque:
+        command.append("--accept-opaque")
+    if args.require_alpha:
+        command.append("--require-alpha")
+    if getattr(args, "checkpoint_root", None):
+        command.extend(["--checkpoint-root", args.checkpoint_root])
+    if getattr(args, "evidence", None):
+        command.extend(["--evidence", args.evidence])
+    if getattr(args, "max_stage_memory_gib", None):
+        command.extend(["--max-stage-memory-gib", str(args.max_stage_memory_gib)])
+    run(command)
+
+
+def command_model_oracle_texture(args: argparse.Namespace) -> None:
     if args.model != "trellis2":
         raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
     if not trellis_python().is_file():
-        command_model_setup(args)
+        command_model_oracle_setup(args)
     command = [
         str(trellis_python()), str(ROOT / "ports" / "trellis2" / "texture.py"),
         "--mesh", args.mesh, "--input", args.input, "--output", args.output,
@@ -523,6 +606,33 @@ def command_model_texture(args: argparse.Namespace) -> None:
     ]
     if args.no_preprocess:
         command.append("--no-preprocess")
+    run(command)
+
+
+def command_model_texture(args: argparse.Namespace) -> None:
+    if args.model != "trellis2":
+        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    if args.resolution != 512:
+        raise SystemExit(
+            "the native existing-mesh coordinator currently accepts --resolution 512"
+        )
+    command = [
+        str(native_trellis_executable()), "texture",
+        "--mesh", args.mesh, "--input", args.input, "--output", args.output,
+        "--seed", str(args.seed), "--steps", str(args.steps),
+        "--texture-size", str(args.texture_size), "--uv-policy", args.uv_policy,
+        "--alpha-mode", args.alpha_mode,
+    ]
+    if args.accept_opaque:
+        command.append("--accept-opaque")
+    if args.require_alpha:
+        command.append("--require-alpha")
+    if getattr(args, "checkpoint_root", None):
+        command.extend(["--checkpoint-root", args.checkpoint_root])
+    if getattr(args, "evidence", None):
+        command.extend(["--evidence", args.evidence])
+    if getattr(args, "max_stage_memory_gib", None):
+        command.extend(["--max-stage-memory-gib", str(args.max_stage_memory_gib)])
     run(command)
 
 
@@ -543,24 +653,36 @@ def parser() -> argparse.ArgumentParser:
     model = commands.add_parser("model", help="set up, test, or run a full model runtime")
     model_commands = model.add_subparsers(dest="model_command", required=True)
     for name, help_text, function in (
-        ("setup", "prepare an isolated model runtime", command_model_setup),
-        ("test", "run reference compatibility and primitive tests", command_model_test),
+        ("setup", "install the native Swift/Metal runtime and pinned weights", command_model_setup),
+        ("test", "run native Swift/Metal conformance tests", command_model_test),
         ("native-setup", "build the no-Torch Swift/Metal runtime", command_model_native_setup),
         ("native-test", "run native Swift/Metal conformance tests", command_model_native_test),
         ("native-audit", "audit the release binary for a Swift/Metal-only runtime", command_model_native_audit),
         ("native-benchmark", "benchmark native Metal model primitives", command_model_native_benchmark),
+        ("native-pbr-benchmark", "benchmark the synchronized native Metal PBR bake stage", command_model_native_pbr_benchmark),
+        ("oracle-setup", "install the isolated Torch/MPS correctness oracle", command_model_oracle_setup),
+        ("oracle-test", "run optional Torch/MPS oracle tests", command_model_oracle_test),
     ):
         sub = model_commands.add_parser(name, help=help_text)
         sub.add_argument("model")
-        if name == "native-test":
+        if name == "setup":
+            sub.add_argument("--root")
+            sub.add_argument("--feature", choices=("generate", "texture", "all"), default="all")
+        if name in ("test", "native-test"):
             sub.add_argument("--checkpoint")
             sub.add_argument("--texture-checkpoint")
             sub.add_argument("--sparse-structure-checkpoint")
             sub.add_argument("--sparse-structure-decoder-checkpoint")
             sub.add_argument("--shape-decoder-checkpoint")
             sub.add_argument("--texture-decoder-checkpoint")
+            sub.add_argument("--shape-encoder-checkpoint")
             sub.add_argument("--dino-checkpoint")
         if name == "native-benchmark":
+            sub.add_argument("--warmup", type=int, default=5)
+            sub.add_argument("--iterations", type=int, default=20)
+        if name == "native-pbr-benchmark":
+            sub.add_argument("--texture-size", type=int, default=2048)
+            sub.add_argument("--resolution", type=int, default=64)
             sub.add_argument("--warmup", type=int, default=5)
             sub.add_argument("--iterations", type=int, default=20)
         sub.set_defaults(func=function)
@@ -571,16 +693,39 @@ def parser() -> argparse.ArgumentParser:
     model_run.add_argument("--seed", type=int, default=42)
     model_run.add_argument(
         "--pipeline-type",
-        choices=("512", "1024", "1024_cascade", "1536_cascade"),
+        choices=("512",),
         default="512",
     )
     model_run.add_argument("--steps", type=int)
     model_run.add_argument("--texture-size", type=int, default=2048)
-    model_run.add_argument("--decimation-target", type=int, default=1_000_000)
     model_run.add_argument("--alpha-mode", choices=("OPAQUE", "BLEND", "MASK"), default="OPAQUE")
-    model_run.add_argument("--no-preprocess", action="store_true")
-    model_run.add_argument("--experimental-pbr", action="store_true")
+    model_run.add_argument("--accept-opaque", action="store_true")
+    model_run.add_argument("--require-alpha", action="store_true")
+    model_run.add_argument("--checkpoint-root")
+    model_run.add_argument("--evidence")
+    model_run.add_argument("--max-stage-memory-gib", type=int)
     model_run.set_defaults(func=command_model_run)
+    oracle_run = model_commands.add_parser(
+        "oracle-run", help="run the optional pinned Torch/MPS reference model"
+    )
+    oracle_run.add_argument("model")
+    oracle_run.add_argument("--input", required=True)
+    oracle_run.add_argument("--output", required=True)
+    oracle_run.add_argument("--seed", type=int, default=42)
+    oracle_run.add_argument(
+        "--pipeline-type",
+        choices=("512", "1024", "1024_cascade", "1536_cascade"),
+        default="512",
+    )
+    oracle_run.add_argument("--steps", type=int)
+    oracle_run.add_argument("--texture-size", type=int, default=2048)
+    oracle_run.add_argument("--decimation-target", type=int, default=1_000_000)
+    oracle_run.add_argument(
+        "--alpha-mode", choices=("OPAQUE", "BLEND", "MASK"), default="OPAQUE"
+    )
+    oracle_run.add_argument("--no-preprocess", action="store_true")
+    oracle_run.add_argument("--experimental-pbr", action="store_true")
+    oracle_run.set_defaults(func=command_model_oracle_run)
     model_texture = model_commands.add_parser(
         "texture", help="texture an existing mesh with TRELLIS.2"
     )
@@ -589,13 +734,44 @@ def parser() -> argparse.ArgumentParser:
     model_texture.add_argument("--input", required=True)
     model_texture.add_argument("--output", required=True)
     model_texture.add_argument("--seed", type=int, default=42)
-    model_texture.add_argument("--resolution", type=int, choices=(512, 1024, 1536), default=512)
-    model_texture.add_argument("--texture-size", type=int, choices=(1024, 2048, 4096), default=2048)
+    model_texture.add_argument("--resolution", type=int, choices=(512,), default=512)
+    model_texture.add_argument("--texture-size", type=int, default=2048)
     model_texture.add_argument("--steps", type=int, default=12)
-    model_texture.add_argument("--uv-policy", choices=("preserve", "regenerate"), default="preserve")
+    model_texture.add_argument(
+        "--uv-policy",
+        choices=("preserve", "preserve-or-generate", "regenerate"),
+        default="preserve-or-generate",
+    )
     model_texture.add_argument("--alpha-mode", choices=("OPAQUE", "BLEND", "MASK"), default="OPAQUE")
-    model_texture.add_argument("--no-preprocess", action="store_true")
+    model_texture.add_argument("--accept-opaque", action="store_true")
+    model_texture.add_argument("--require-alpha", action="store_true")
+    model_texture.add_argument("--checkpoint-root")
+    model_texture.add_argument("--evidence")
+    model_texture.add_argument("--max-stage-memory-gib", type=int)
     model_texture.set_defaults(func=command_model_texture)
+    oracle_texture = model_commands.add_parser(
+        "oracle-texture", help="texture a mesh with the optional Torch/MPS oracle"
+    )
+    oracle_texture.add_argument("model")
+    oracle_texture.add_argument("--mesh", required=True)
+    oracle_texture.add_argument("--input", required=True)
+    oracle_texture.add_argument("--output", required=True)
+    oracle_texture.add_argument("--seed", type=int, default=42)
+    oracle_texture.add_argument(
+        "--resolution", type=int, choices=(512, 1024, 1536), default=512
+    )
+    oracle_texture.add_argument(
+        "--texture-size", type=int, choices=(1024, 2048, 4096), default=2048
+    )
+    oracle_texture.add_argument("--steps", type=int, default=12)
+    oracle_texture.add_argument(
+        "--uv-policy", choices=("preserve", "regenerate"), default="preserve"
+    )
+    oracle_texture.add_argument(
+        "--alpha-mode", choices=("OPAQUE", "BLEND", "MASK"), default="OPAQUE"
+    )
+    oracle_texture.add_argument("--no-preprocess", action="store_true")
+    oracle_texture.set_defaults(func=command_model_oracle_texture)
     return result
 
 

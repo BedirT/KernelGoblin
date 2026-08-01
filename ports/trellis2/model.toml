@@ -2,7 +2,7 @@ id = "trellis2"
 model = "microsoft/TRELLIS.2"
 description = "Native Swift and Metal image-to-3D and existing-mesh texturing runtime"
 production_runtime = "swift-metal"
-reference_runtime = "python-torch-mps"
+oracle_runtime = "python-torch-mps"
 platforms = ["macos-arm64"]
 
 [source]
@@ -135,6 +135,7 @@ source_roots = ["Sources/KernelGoblinTrellis2", "Sources/KernelGoblinTrellis2CLI
 allowed_source_extensions = [".swift", ".metal"]
 forbidden_imports = ["PythonKit", "Torch", "LibTorch", "MetalPerformanceShaders", "MetalPerformanceShadersGraph"]
 external_package_dependencies = []
+system_frameworks = ["CoreGraphics", "CoreVideo", "Foundation", "ImageIO", "Metal", "ModelIO", "UniformTypeIdentifiers", "Vision"]
 torch_policy = "oracle-only"
 
 [verification]
