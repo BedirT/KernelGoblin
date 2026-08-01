@@ -49,6 +49,7 @@ baseline is exactly what the native Metal runtime is here to replace.
 | Swift safetensors runtime | **Verified native foundation** | Parsed the real 1.21 GB DINOv3 checkpoint and mapped it into one no-copy `MTLBuffer` |
 | Real DINOv3 dense projection | **Verified native Metal slice** | `layer.0.attention.q_proj` from the pinned checkpoint, max absolute error `4.77e-7` against a CPU oracle |
 | Real TRELLIS shape-flow projection | **Verified native Metal slice** | Pinned 2.58 GB checkpoint, BF16 `[1536,32]` input layer, 17 rows, zero BF16 bit mismatches |
+| TRELLIS timestep + shared adaLN | **Verified native Metal slice** | Real sinusoid, two-layer SiLU MLP, and 9,216-channel modulation; zero BF16 bit mismatches |
 | CPU mesh to flexible dual grid | **Verified reference extension** | Pinned O-Voxel algorithm through LibTorch, AppleClang portability patch, tetrahedron fixtures; native Swift bridge remains |
 | Sparse PBR sampling and glTF packing | **Verified reference component** | Bounded sampling, xatlas seams, RGBA and metallic-roughness packing, GLB reload; native assembly remains |
 | TRELLIS.2 512 image-to-3D | **Verified Torch/MPS oracle** | Default 12 steps, reloadable 61 MB GLB |
@@ -163,12 +164,18 @@ And the first layer from the real 2.58 GB TRELLIS shape-flow checkpoint:
 ```sh
 swift run -c release kg-trellis2 \
   verify-slat-input-layer /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors
+
+swift run -c release kg-trellis2 \
+  verify-slat-conditioning /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors
 ```
 
 Both verification commands authenticate the complete checkpoint SHA-256
 before reporting a pinned-model result. The TRELLIS slice maps 2.584 GB,
 copies zero weight bytes into a second heap allocation, and compares all
-26,112 outputs with an independent CPU calculation before the BF16 cast.
+26,112 input-layer outputs with an independent CPU calculation before the
+BF16 cast. The conditioning command continues through the real timestep MLP
+and shared adaLN projection, producing 9,216 modulation channels with zero
+post-cast BF16 bit mismatches.
 
 On the development M3 Pro, the current UV raster benchmark reports:
 

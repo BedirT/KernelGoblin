@@ -192,6 +192,51 @@ struct CheckpointTests {
         #expect(abs(actual[0] - -1.25) < 1e-6)
         #expect(abs(actual[1] - -0.75) < 1e-6)
     }
+
+    @Test("Metal timestep embedding and SiLU match CPU formulas")
+    func primitiveMath() throws {
+        let context = try MetalContext()
+        let kernel = try PrimitiveKernel(context: context)
+        var timesteps: [Float] = [0.5, 1000]
+        let timestepBuffer = try #require(context.device.makeBuffer(
+            bytes: &timesteps, length: timesteps.count * 4, options: .storageModeShared
+        ))
+        let embedding = try #require(context.device.makeBuffer(
+            length: timesteps.count * 5 * 4, options: .storageModeShared
+        ))
+        try kernel.timestepEmbeddingF32(
+            timesteps: timestepBuffer, rows: 2, dimensions: 5, output: embedding
+        )
+        let actualEmbedding = embedding.contents().assumingMemoryBound(to: Float.self)
+        for row in 0..<2 {
+            for column in 0..<5 {
+                let expected: Float
+                if column == 4 {
+                    expected = 0
+                } else {
+                    let frequencyIndex = column % 2
+                    let frequency = exp(-log(Float(10_000)) * Float(frequencyIndex) / 2)
+                    let phase = timesteps[row] * frequency
+                    expected = column < 2 ? cos(phase) : sin(phase)
+                }
+                #expect(abs(actualEmbedding[row * 5 + column] - expected) < 2e-6)
+            }
+        }
+
+        var values: [Float] = [-4, -1, 0, 1, 4]
+        let input = try #require(context.device.makeBuffer(
+            bytes: &values, length: values.count * 4, options: .storageModeShared
+        ))
+        let output = try #require(context.device.makeBuffer(
+            length: values.count * 4, options: .storageModeShared
+        ))
+        try kernel.siluF32(input: input, count: values.count, output: output)
+        let actualSiLU = output.contents().assumingMemoryBound(to: Float.self)
+        for index in values.indices {
+            let expected = values[index] / (1 + exp(-values[index]))
+            #expect(abs(actualSiLU[index] - expected) < 2e-6)
+        }
+    }
 }
 
 private func bf16(_ value: Float) -> UInt16 {

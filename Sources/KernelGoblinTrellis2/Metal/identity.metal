@@ -70,3 +70,39 @@ kernel void kg_linear_bf16_weights_f32_output(
   }
   output[index] = value;
 }
+
+struct TimestepEmbeddingParams {
+  uint rows;
+  uint dimensions;
+  float log_max_period;
+};
+
+kernel void kg_timestep_embedding_f32(
+    const device float* timesteps [[buffer(0)]],
+    device float* output [[buffer(1)]],
+    constant TimestepEmbeddingParams& params [[buffer(2)]],
+    uint index [[thread_position_in_grid]]) {
+  const uint count = params.rows * params.dimensions;
+  if (index >= count) return;
+  const uint row = index / params.dimensions;
+  const uint column = index % params.dimensions;
+  const uint half_dimensions = params.dimensions / 2;
+  if (column >= half_dimensions * 2) {
+    output[index] = 0.0f;
+    return;
+  }
+  const uint frequency_index =
+      column < half_dimensions ? column : column - half_dimensions;
+  const float frequency = exp(
+      -params.log_max_period * float(frequency_index) / float(half_dimensions));
+  const float phase = timesteps[row] * frequency;
+  output[index] = column < half_dimensions ? cos(phase) : sin(phase);
+}
+
+kernel void kg_silu_f32(
+    const device float* input [[buffer(0)]],
+    device float* output [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint index [[thread_position_in_grid]]) {
+  if (index < count) output[index] = input[index] / (1.0f + exp(-input[index]));
+}

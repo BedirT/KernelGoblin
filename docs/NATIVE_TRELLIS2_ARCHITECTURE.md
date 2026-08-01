@@ -129,6 +129,11 @@ stored BF16 `[1536,32]` weight and bias to F32 arithmetic. All 26,112 F32
 outputs are compared with a CPU calculation and then compared bit-for-bit
 after round-to-nearest-even BF16 conversion.
 
-This is one real model layer, not a complete model stage. The next acceptance
-boundary is timestep embedding, F32 normalization, adaLN modulation, and one
-complete cross-transformer block.
+The second native slice now executes the pinned timestep sinusoid, both real
+BF16-stored MLP projections with SiLU, and the shared adaLN projection to 9,216
+channels. At timestep `650.25`, maximum F32 error was `4.77e-6` and every
+round-to-nearest-even BF16 output bit matched the CPU oracle.
+
+These are real model operations, not a complete model stage. The next
+acceptance boundary is F32 normalization and one complete cross-transformer
+block, including fused self- and cross-attention.

@@ -44,6 +44,7 @@ the checkpoint.
 | Safetensors | Verified native foundation | Exact JSON integers, contiguous non-overlapping ranges, single-descriptor parse/map |
 | DINO q projection | Verified native slice | Hash-authenticated 1.21 GB checkpoint, F32 Metal/CPU differential |
 | TRELLIS shape input layer | Verified native slice | Hash-authenticated 2.58 GB checkpoint, BF16 weight decode, 26,112 outputs, zero BF16 bit mismatches |
+| TRELLIS timestep + shared adaLN | Verified native slice | Real Metal sinusoid, SiLU MLP, 9,216-channel modulation, zero BF16 bit mismatches |
 | Morton coding | Verified native Metal | Bit-exact differential and randomized round trips |
 | UV raster | Verified analytic Metal slice | Physical render, analytic coverage/interpolation; nvdiffrast CUDA goldens pending |
 | PBR bake | Experimental reference | Synthetic component tests and GLB reload; upstream mesh semantics pending |
@@ -124,6 +125,18 @@ matched the CPU calculation and all 26,112 BF16 outputs matched bit-for-bit.
 
 The same CLI verifies DINOv3's real `layer.0.attention.q_proj` only after
 authenticating its pinned SHA-256.
+
+The next conditioning slice is also native:
+
+```sh
+swift run -c release kg-trellis2 \
+  verify-slat-conditioning /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors
+```
+
+It runs the exact 256-channel timestep sinusoid, two real checkpoint linear
+layers with SiLU, and the shared adaLN projection to 9,216 channels. At
+timestep `650.25`, maximum F32 error was `4.77e-6` and the BF16-cast output was
+bit-exact against the CPU oracle.
 
 ## Reference Artifacts
 
