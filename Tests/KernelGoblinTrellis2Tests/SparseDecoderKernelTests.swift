@@ -117,6 +117,13 @@ struct SparseDecoderKernelTests {
             SparseStructureCoordinate(x: 0, y: 1, z: 0),
             SparseStructureCoordinate(x: 0, y: 0, z: 1),
         ])
+        try subdivision.validate(parentCoordinates: parents)
+        #expect(throws: NativeRuntimeError.self) {
+            try subdivision.validate(parentCoordinates: [
+                SparseStructureCoordinate(x: 0, y: 0, z: 0),
+                SparseStructureCoordinate(x: 0, y: 0, z: 0),
+            ])
+        }
         let (parentMap, childMap) = try #require(
             try subdivision.makeMetalBuffers(context: context)
         )
@@ -721,7 +728,7 @@ struct SparseDecoderKernelTests {
             #expect(scaleRatio <= 0.004)
         }
         compare(
-            result.subdivisionLogits, expectedOffset: 3072,
+            try #require(result.subdivisionLogits), expectedOffset: 3072,
             count: parentCoordinates.count * 8, name: "subdivision"
         )
         compare(
@@ -796,6 +803,101 @@ struct SparseDecoderKernelTests {
         )
         let snapshot = try #require(context.arena).snapshot()
         print("shape decoder full: tokens=\(result.coordinates.count) peak=\(snapshot.peakUsedBytes)")
+        #expect(snapshot.peakUsedBytes <= 256 * 1024 * 1024)
+    }
+
+    @Test(
+        "complete guided texture decoder matches the pinned MPS graph",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["KG_TRELLIS2_TEXTURE_DECODER_CHECKPOINT"] != nil,
+            "Set KG_TRELLIS2_TEXTURE_DECODER_CHECKPOINT for texture decoder conformance"
+        )
+    )
+    func completeTextureDecoder() throws {
+        let path = try #require(
+            ProcessInfo.processInfo.environment["KG_TRELLIS2_TEXTURE_DECODER_CHECKPOINT"]
+        )
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "texture-decoder-full-mps", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(fileSHA256(at: fixtureURL) ==
+            "38cda3cd5ce04b41bccb6f70bc82a744e6df7a45378fbbf02e15e7fd38b63d8a")
+        let metadataURL = fixtureURL.appendingPathExtension("json")
+        try #require(fileSHA256(at: metadataURL) ==
+            "97821c9de194c4c34e31b13e50167b813c03bb8ab616a1fee18a285f6c884aaa")
+        let metadata = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL)) as? [String: Any]
+        )
+        #expect(metadata["oracle_call"] as? String ==
+            "SparseUnetVaeDecoder(pred_subdiv=False).forward(guide_subs=shape_subs)")
+        #expect(metadata["pipeline_transform"] as? String == "raw * 0.5 + 0.5")
+        let expected = try Data(contentsOf: fixtureURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        let shapeFixtureURL = try #require(Bundle.module.url(
+            forResource: "shape-decoder-full-mps", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(fileSHA256(at: shapeFixtureURL) ==
+            "5dc2be21657b0dc3ed82e4323251fbf0f17850f2c13d5f3e421ffec2e96a586b")
+        let shapeFixture = try Data(contentsOf: shapeFixtureURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        let context = try MetalContext(arenaCapacity: 256 * 1024 * 1024)
+        let checkpoint = try MappedCheckpoint(
+            url: URL(fileURLWithPath: path), device: context.device
+        )
+        try #require(checkpoint.sha256() ==
+            "97ea69addea2ecd9312910f5f548234665eef51c088386180b7cd5b258645e3c")
+        var coordinates = [SparseStructureCoordinate(x: 0, y: 0, z: 0)]
+        let subdivisionOffsets = [32, 40, 104, 200]
+        let subdivisionParentCounts = [1, 8, 12, 22]
+        var guides: [SparseSubdivision2x] = []
+        for stage in 0..<4 {
+            var logits = Array(shapeFixture[
+                subdivisionOffsets[stage]..<(subdivisionOffsets[stage] + subdivisionParentCounts[stage] * 8)
+            ])
+            let buffer = try #require(context.device.makeBuffer(
+                bytes: &logits, length: logits.count * 4, options: .storageModeShared
+            ))
+            let guide = try SparseSubdivision2x(
+                parentCoordinates: coordinates, logits: buffer
+            )
+            guides.append(guide)
+            coordinates = guide.coordinates
+        }
+        var latentValues = Array(expected[0..<32])
+        let latent = try #require(context.device.makeBuffer(
+            bytes: &latentValues, length: latentValues.count * 4,
+            options: .storageModeShared
+        ))
+        let result = try TextureSparseDecoder(context: context)(
+            latent: latent,
+            coordinates: [SparseStructureCoordinate(x: 0, y: 0, z: 0)],
+            spatialShape: SparseSpatialShape(cubic: 1),
+            subdivisionGuides: guides, checkpoint: checkpoint
+        )
+        let rawOutputCoordinates = try #require(metadata["output_coordinates"] as? [[Int]])
+        let expectedCoordinates = rawOutputCoordinates.map {
+            SparseStructureCoordinate(
+                batch: Int32($0[0]), x: Int32($0[1]), y: Int32($0[2]), z: Int32($0[3])
+            )
+        }
+        #expect(result.coordinates == expectedCoordinates)
+        #expect(result.spatialShape == (try SparseSpatialShape(cubic: 16)))
+        compareDecoderBuffer(
+            result.rawHead, expected: expected, expectedOffset: 32,
+            count: result.coordinates.count * 6, name: "texture raw head",
+            normalizedCap: 0.002, scaleCap: 0.004
+        )
+        compareDecoderBuffer(
+            result.pbrFields, expected: expected, expectedOffset: 386,
+            count: result.coordinates.count * 6, name: "texture PBR transform",
+            normalizedCap: 0.002, scaleCap: 0.004
+        )
+        let snapshot = try #require(context.arena).snapshot()
+        print("texture decoder full: tokens=\(result.coordinates.count) peak=\(snapshot.peakUsedBytes)")
         #expect(snapshot.peakUsedBytes <= 256 * 1024 * 1024)
     }
 }

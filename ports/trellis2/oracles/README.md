@@ -178,3 +178,16 @@ PYTORCH_ENABLE_MPS_FALLBACK=0 build/trellis2/.venv/bin/python \
 The complete fixture begins with one sparse token and ends with 59 coordinates.
 It authenticates graph and dtype-boundary behavior, not production-size memory
 or throughput.
+
+The guided texture-decoder fixture derives those same four subdivision maps
+from the pinned shape decoder, executes the complete texture checkpoint, and
+records both the raw six-channel head and the pipeline's unclamped linear PBR
+transform:
+
+```sh
+PYTORCH_ENABLE_MPS_FALLBACK=0 build/trellis2/.venv/bin/python \
+  ports/trellis2/oracles/export_texture_decoder_full_fixture.py \
+  --shape-checkpoint /path/to/shape_dec_next_dc_f16c32_fp16.safetensors \
+  --texture-checkpoint /path/to/tex_dec_next_dc_f16c32_fp16.safetensors \
+  --output Tests/KernelGoblinTrellis2Tests/Fixtures/texture-decoder-full-mps.f32
+```

@@ -1,8 +1,8 @@
 import Metal
 
 public struct SparseC2SCheckpointLayout: Sendable {
-    let subdivisionWeight: Int
-    let subdivisionBias: Int
+    let subdivisionWeight: Int?
+    let subdivisionBias: Int?
     let normWeight: Int
     let normBias: Int
     let convolutionUpWeight: Int
@@ -11,7 +11,7 @@ public struct SparseC2SCheckpointLayout: Sendable {
     let convolutionOutputBias: Int
 
     init(
-        subdivisionWeight: Int, subdivisionBias: Int,
+        subdivisionWeight: Int?, subdivisionBias: Int?,
         normWeight: Int, normBias: Int,
         convolutionUpWeight: Int, convolutionUpBias: Int,
         convolutionOutputWeight: Int, convolutionOutputBias: Int
@@ -28,7 +28,8 @@ public struct SparseC2SCheckpointLayout: Sendable {
 
     public init(
         checkpoint: MappedCheckpoint, stage: Int, block: Int,
-        inputChannels: Int, outputChannels: Int
+        inputChannels: Int, outputChannels: Int,
+        predictsSubdivision: Bool = true
     ) throws {
         guard stage >= 0, block >= 0, inputChannels > 0, outputChannels > 0 else {
             throw NativeRuntimeError.invalidArgument("invalid C2S checkpoint location")
@@ -47,8 +48,10 @@ public struct SparseC2SCheckpointLayout: Sendable {
             throw NativeRuntimeError.invalidArgument("C2S channel count overflows")
         }
         let ci = UInt64(inputChannels), co = UInt64(outputChannels)
-        let subdivisionWeight = try tensor("to_subdiv.weight", [8, ci])
-        let subdivisionBias = try tensor("to_subdiv.bias", [8])
+        let subdivisionWeight = try predictsSubdivision
+            ? tensor("to_subdiv.weight", [8, ci]) : nil
+        let subdivisionBias = try predictsSubdivision
+            ? tensor("to_subdiv.bias", [8]) : nil
         let normWeight = try tensor("norm1.weight", [ci])
         let normBias = try tensor("norm1.bias", [ci])
         let convolutionUpWeight = try tensor("conv1.weight", [co * 8, 3, 3, 3, ci])
@@ -56,8 +59,8 @@ public struct SparseC2SCheckpointLayout: Sendable {
         let convolutionOutputWeight = try tensor("conv2.weight", [co, 3, 3, 3, co])
         let convolutionOutputBias = try tensor("conv2.bias", [co])
         self.init(
-            subdivisionWeight: Int(subdivisionWeight.fileOffset),
-            subdivisionBias: Int(subdivisionBias.fileOffset),
+            subdivisionWeight: subdivisionWeight.map { Int($0.fileOffset) },
+            subdivisionBias: subdivisionBias.map { Int($0.fileOffset) },
             normWeight: Int(normWeight.fileOffset), normBias: Int(normBias.fileOffset),
             convolutionUpWeight: Int(convolutionUpWeight.fileOffset),
             convolutionUpBias: Int(convolutionUpBias.fileOffset),
@@ -72,7 +75,7 @@ public struct SparseC2SResult: @unchecked Sendable {
     public let coordinates: [SparseStructureCoordinate]
     public let neighborhood: SparseNeighborhood3x3
     public let neighborBuffer: MTLBuffer?
-    public let subdivisionLogits: MTLBuffer
+    public let subdivisionLogits: MTLBuffer?
     public let subdivision: SparseSubdivision2x
 }
 
@@ -103,31 +106,58 @@ public final class SparseC2SBlock: @unchecked Sendable {
         checkpoint: MTLBuffer,
         layout: SparseC2SCheckpointLayout,
         inputChannels: Int,
-        outputChannels: Int
+        outputChannels: Int,
+        guide: SparseSubdivision2x? = nil
     ) throws -> SparseC2SResult {
         let tokenCount = coordinates.count
         let parentElements = try sparseC2SProduct(tokenCount, inputChannels)
         let parentBytes = try sparseC2SProduct(parentElements, MemoryLayout<Float>.stride)
-        let logitElements = try sparseC2SProduct(tokenCount, 8)
-        let logitBytes = try sparseC2SProduct(logitElements, MemoryLayout<Float>.stride)
         guard tokenCount > 0, inputChannels > 0, inputChannels.isMultiple(of: 8),
               outputChannels > 0, outputChannels.isMultiple(of: inputChannels / 8),
               input.length >= parentBytes else {
             throw NativeRuntimeError.invalidArgument("invalid C2S sparse input")
         }
-        let logits = try context.makeBuffer(
-            length: logitBytes, label: "TRELLIS subdivision logits"
-        )
-        try dense.linearF16WeightsF32Output(
-            input: input, checkpoint: checkpoint,
-            weightOffset: layout.subdivisionWeight, biasOffset: layout.subdivisionBias,
-            rows: tokenCount, inputChannels: inputChannels, outputChannels: 8,
-            output: logits
-        )
-        try sparseStructure.roundF16F32(input: logits, count: logitElements, output: logits)
-        let subdivision = try SparseSubdivision2x(
-            parentCoordinates: coordinates, logits: logits
-        )
+        let subdivisionLogits: MTLBuffer?
+        let subdivision: SparseSubdivision2x
+        if let subdivisionWeight = layout.subdivisionWeight,
+           let subdivisionBias = layout.subdivisionBias {
+            guard guide == nil else {
+                throw NativeRuntimeError.invalidArgument(
+                    "predicted C2S subdivision cannot also accept a guide"
+                )
+            }
+            let logitElements = try sparseC2SProduct(tokenCount, 8)
+            let logitBytes = try sparseC2SProduct(
+                logitElements, MemoryLayout<Float>.stride
+            )
+            let logits = try context.makeBuffer(
+                length: logitBytes, label: "TRELLIS subdivision logits"
+            )
+            try dense.linearF16WeightsF32Output(
+                input: input, checkpoint: checkpoint,
+                weightOffset: subdivisionWeight, biasOffset: subdivisionBias,
+                rows: tokenCount, inputChannels: inputChannels, outputChannels: 8,
+                output: logits
+            )
+            try sparseStructure.roundF16F32(
+                input: logits, count: logitElements, output: logits
+            )
+            subdivision = try SparseSubdivision2x(
+                parentCoordinates: coordinates, logits: logits
+            )
+            subdivisionLogits = logits
+        } else {
+            guard layout.subdivisionWeight == nil,
+                  layout.subdivisionBias == nil,
+                  let guide else {
+                throw NativeRuntimeError.invalidArgument(
+                    "guided C2S subdivision requires an explicit guide"
+                )
+            }
+            try guide.validate(parentCoordinates: coordinates)
+            subdivision = guide
+            subdivisionLogits = nil
+        }
         let childShape = try SparseSpatialShape(
             width: sparseC2SSpatialDouble(spatialShape.width),
             height: sparseC2SSpatialDouble(spatialShape.height),
@@ -139,7 +169,8 @@ public final class SparseC2SBlock: @unchecked Sendable {
         guard !subdivision.coordinates.isEmpty else {
             return SparseC2SResult(
                 features: nil, coordinates: [], neighborhood: childNeighborhood,
-                neighborBuffer: nil, subdivisionLogits: logits, subdivision: subdivision
+                neighborBuffer: nil, subdivisionLogits: subdivisionLogits,
+                subdivision: subdivision
             )
         }
         let maps = try requireSubdivisionMaps(
@@ -233,7 +264,7 @@ public final class SparseC2SBlock: @unchecked Sendable {
         return SparseC2SResult(
             features: output, coordinates: subdivision.coordinates,
             neighborhood: childNeighborhood, neighborBuffer: childNeighborBuffer,
-            subdivisionLogits: logits, subdivision: subdivision
+            subdivisionLogits: subdivisionLogits, subdivision: subdivision
         )
     }
 }

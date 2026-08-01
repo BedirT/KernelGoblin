@@ -282,3 +282,22 @@ the inference mesh is assembled in Swift using O-Voxel's three axis quads,
 missing-neighbor rejection, strict split-weight comparison, and split-two tie
 rule. Production decoder handoff and a pinned O-Voxel mesh differential remain
 acceptance gates before this becomes a model-level geometry claim.
+
+## Complete Native Sparse Texture Decoder
+
+The matching texture decoder now reuses the same native sparse backbone with
+the checkpoint's actual guided topology contract. It accepts the four
+coarse-to-fine subdivision maps emitted by the shape decoder, rejects malformed
+parent/child mappings, executes all 32 blocks from the real 948 MB texture
+checkpoint, and produces six unclamped fields in RGB, metallic, roughness, and
+alpha order. A physical Metal pass then applies the upstream pipeline's exact
+linear transform, `raw * 0.5 + 0.5`; it deliberately does not substitute a
+sigmoid or clamp.
+
+Against the pinned physical-MPS graph, all 59 coordinates match exactly. The
+raw head reaches `0.001523` normalized RMS and the transformed PBR fields reach
+`0.001251`. As with the shape fixture, the single starting token proves the
+full graph and guide contract but not production-scale throughput or memory.
+Image-to-3D supplies explicit shape guides. Existing-mesh texturing must
+materialize equivalent inverse maps from the native shape encoder rather than
+silently expanding every child.

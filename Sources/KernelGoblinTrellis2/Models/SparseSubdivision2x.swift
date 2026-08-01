@@ -65,6 +65,35 @@ public struct SparseSubdivision2x: Sendable {
             upload(childIndices, label: "TRELLIS subdivision children")
         )
     }
+
+    public func validate(
+        parentCoordinates: [SparseStructureCoordinate]
+    ) throws {
+        guard coordinates.count == parentIndices.count,
+              coordinates.count == childIndices.count else {
+            throw NativeRuntimeError.invalidArgument("invalid sparse subdivision guide")
+        }
+        for index in coordinates.indices {
+            let parentIndex = Int(parentIndices[index])
+            let child = childIndices[index]
+            guard parentIndex < parentCoordinates.count, child < 8 else {
+                throw NativeRuntimeError.invalidArgument("invalid sparse subdivision guide")
+            }
+            let parent = parentCoordinates[parentIndex]
+            guard parent.batch >= 0,
+                  parent.x >= 0, parent.x <= (Int32.max - 1) / 2,
+                  parent.y >= 0, parent.y <= (Int32.max - 1) / 2,
+                  parent.z >= 0, parent.z <= (Int32.max - 1) / 2,
+                  coordinates[index] == SparseStructureCoordinate(
+                    batch: parent.batch,
+                    x: parent.x * 2 + Int32(child & 1),
+                    y: parent.y * 2 + Int32((child >> 1) & 1),
+                    z: parent.z * 2 + Int32((child >> 2) & 1)
+                  ) else {
+                throw NativeRuntimeError.invalidArgument("invalid sparse subdivision guide")
+            }
+        }
+    }
 }
 
 private func sparseSubdivisionProduct(_ lhs: Int, _ rhs: Int) throws -> Int {

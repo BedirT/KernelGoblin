@@ -358,6 +358,17 @@ def command_model_native_test(args: argparse.Namespace) -> None:
             "native TRELLIS.2 conformance requires the pinned shape decoder; "
             "pass --shape-decoder-checkpoint FILE.safetensors"
         )
+    texture_decoder_checkpoint = (
+        Path(args.texture_decoder_checkpoint).expanduser().resolve()
+        if args.texture_decoder_checkpoint else (
+            checkpoint.parent / "tex_dec_next_dc_f16c32_fp16.safetensors"
+        )
+    )
+    if not texture_decoder_checkpoint.is_file():
+        raise SystemExit(
+            "native TRELLIS.2 conformance requires the pinned texture decoder; "
+            "pass --texture-decoder-checkpoint FILE.safetensors"
+        )
     dino_checkpoint = (
         Path(args.dino_checkpoint).expanduser().resolve() if args.dino_checkpoint else (
             Path.home() / ".cache" / "huggingface" / "hub"
@@ -380,6 +391,7 @@ def command_model_native_test(args: argparse.Namespace) -> None:
         sparse_structure_decoder_checkpoint
     )
     environment["KG_TRELLIS2_SHAPE_DECODER_CHECKPOINT"] = str(shape_decoder_checkpoint)
+    environment["KG_TRELLIS2_TEXTURE_DECODER_CHECKPOINT"] = str(texture_decoder_checkpoint)
     environment["KG_TRELLIS2_DINO_CHECKPOINT"] = str(dino_checkpoint)
     # Physical GPU conformance and memory peaks are not meaningful when the
     # heavyweight stage tests contend on independent Metal queues.
@@ -546,6 +558,7 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--sparse-structure-checkpoint")
             sub.add_argument("--sparse-structure-decoder-checkpoint")
             sub.add_argument("--shape-decoder-checkpoint")
+            sub.add_argument("--texture-decoder-checkpoint")
             sub.add_argument("--dino-checkpoint")
         if name == "native-benchmark":
             sub.add_argument("--warmup", type=int, default=5)

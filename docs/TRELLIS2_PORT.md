@@ -15,8 +15,8 @@ already validates and memory-maps real safetensors files, owns bounded Metal
 scratch, executes the complete 24-block DINOv3 conditioner and both TRELLIS
 SLat flows through native samplers, and includes native Morton and UV-raster
 kernels. The native sparse-structure trajectory and complete sparse shape
-decoder are now verified on authenticated fixtures. Raw-image preprocessing,
-production-scale shape and texture sampling, texture decoding,
+decoder and guided sparse texture decoder are now verified on authenticated
+fixtures. Raw-image preprocessing, production-scale shape and texture sampling,
 upstream-faithful PBR export, and existing-mesh texturing remain in progress.
 
 That split is deliberate. A finished reference graph tells us what native code
@@ -65,12 +65,13 @@ settings for all eight 512 components are machine-readable in
 | Occupancy extraction | Verified native Swift | Strict threshold, bit packing, ordered coordinates, and exact 2x pooling |
 | Shared sparse decoder block | Verified native Metal slice | Real shape-decoder block `0.0`, deterministic 3x3 neighbor map, F16 submanifold convolution and MLP boundaries; final normalized RMS `0.000229` |
 | Complete sparse shape decoder | Verified native tiny-graph conformance | Real 948 MB checkpoint, 32 ConvNeXt blocks, four C2S subdivisions, exact final coordinates, raw-head normalized RMS `0.000628`; production token scale remains |
+| Complete guided texture decoder | Verified native tiny-graph conformance | Real 948 MB checkpoint, 32 ConvNeXt blocks, four shape guides, exact final coordinates, raw normalized RMS `0.001523`, PBR-transform normalized RMS `0.001251` |
 | Flexible dual-grid head and mesh | Verified native analytic slice | Physical Metal head transforms and Swift O-Voxel connectivity/tie behavior; pinned extraction differential and production handoff remain |
 | Morton coding | Verified native Metal | Bit-exact differential and randomized round trips |
 | UV raster | Verified analytic Metal slice | Physical render, analytic coverage/interpolation; nvdiffrast CUDA goldens pending |
 | PBR bake | Experimental reference | Synthetic component tests and GLB reload; upstream mesh semantics pending |
 | Existing-mesh texturing | In progress | Staged reference orchestration exists; complete artifact proof pending |
-| Full Swift + Metal model | In progress | Complete DINO, both SLat graphs, the 12-step sparse trajectory, decoder handoff, and complete shape decoder execute natively; image preprocessing, production shape/texture runs, texture decoder, mesh conformance, and PBR assembly remain |
+| Full Swift + Metal model | In progress | Complete DINO, both SLat graphs, the 12-step sparse trajectory, and both sparse decoders execute natively; image preprocessing, production shape/texture runs, mesh conformance, and PBR assembly remain |
 
 ## What The Reference Run Does
 
@@ -231,12 +232,10 @@ against pinned upstream outputs.
 2. Carry the verified production 32-grid coordinates through a full native
    12-step shape flow, complete shape decoder, and flexible dual-grid mesh
    extraction.
-3. Reuse the verified sparse decoder backbone for guided six-channel PBR
-   texture decoding.
-4. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.
-5. Run existing-mesh texturing end to end. Upstream parity regenerates UVs;
+3. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.
+4. Run existing-mesh texturing end to end. Upstream parity regenerates UVs;
    preserving supplied UVs remains an explicit KernelGoblin extension.
-6. Continue optimizing measured dense and attention bottlenecks without
+5. Continue optimizing measured dense and attention bottlenecks without
    weakening the teacher-forced conformance gates.
 
 For the production package and memory contracts, continue with

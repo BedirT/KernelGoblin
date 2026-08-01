@@ -1,23 +1,20 @@
 import Metal
 
-public struct ShapeSparseDecoderResult: @unchecked Sendable {
+public struct TextureSparseDecoderResult: @unchecked Sendable {
     public let rawHead: MTLBuffer
+    public let pbrFields: MTLBuffer
     public let coordinates: [SparseStructureCoordinate]
     public let spatialShape: SparseSpatialShape
-    public let subdivisionGuides: [SparseSubdivision2x]
-    public let subdivisionLogits: [MTLBuffer]
 }
 
-public final class ShapeSparseDecoder: @unchecked Sendable {
-    public static let stageChannels = [1024, 512, 256, 128, 64]
-    public static let stageBlocks = [4, 16, 8, 4, 0]
-
+public final class TextureSparseDecoder: @unchecked Sendable {
     private let context: MetalContext
     private let dense: DenseKernel
     private let normalization: NormalizationKernel
     private let sparseStructure: SparseStructureKernel
     private let convNeXt: SparseConvNeXtBlock
     private let c2s: SparseC2SBlock
+    private let pbr: PBRFieldKernel
 
     public init(context: MetalContext) throws {
         self.context = context
@@ -26,42 +23,45 @@ public final class ShapeSparseDecoder: @unchecked Sendable {
         self.sparseStructure = try SparseStructureKernel(context: context)
         self.convNeXt = try SparseConvNeXtBlock(context: context)
         self.c2s = try SparseC2SBlock(context: context)
+        self.pbr = try PBRFieldKernel(context: context)
     }
 
     public func callAsFunction(
         latent: MTLBuffer,
         coordinates: [SparseStructureCoordinate],
         spatialShape: SparseSpatialShape,
+        subdivisionGuides: [SparseSubdivision2x],
         checkpoint: MappedCheckpoint
-    ) throws -> ShapeSparseDecoderResult {
+    ) throws -> TextureSparseDecoderResult {
         let tokenCount = coordinates.count
-        let latentElements = try shapeDecoderProduct(tokenCount, 32)
-        let latentBytes = try shapeDecoderProduct(
+        let latentElements = try textureDecoderProduct(tokenCount, 32)
+        let latentBytes = try textureDecoderProduct(
             latentElements, MemoryLayout<Float>.stride
         )
-        guard tokenCount > 0, latent.length >= latentBytes else {
-            throw NativeRuntimeError.invalidArgument("invalid shape decoder latent")
+        guard tokenCount > 0, latent.length >= latentBytes,
+              subdivisionGuides.count == ShapeSparseDecoder.stageChannels.count - 1 else {
+            throw NativeRuntimeError.invalidArgument("invalid texture decoder input")
         }
-        let fromWeight = try shapeDecoderTensor(
+        let fromWeight = try textureDecoderTensor(
             checkpoint, "from_latent.weight", .f16, [1024, 32]
         )
-        let fromBias = try shapeDecoderTensor(
+        let fromBias = try textureDecoderTensor(
             checkpoint, "from_latent.bias", .f16, [1024]
         )
-        let outputWeight = try shapeDecoderTensor(
-            checkpoint, "output_layer.weight", .f16, [7, 64]
+        let outputWeight = try textureDecoderTensor(
+            checkpoint, "output_layer.weight", .f16, [6, 64]
         )
-        let outputBias = try shapeDecoderTensor(
-            checkpoint, "output_layer.bias", .f16, [7]
+        let outputBias = try textureDecoderTensor(
+            checkpoint, "output_layer.bias", .f16, [6]
         )
         return try autoreleasepool {
             let checkpointBuffer = try checkpoint.acquireBuffer()
-            let initialElements = try shapeDecoderProduct(tokenCount, 1024)
-            let initialBytes = try shapeDecoderProduct(
+            let initialElements = try textureDecoderProduct(tokenCount, 1024)
+            let initialBytes = try textureDecoderProduct(
                 initialElements, MemoryLayout<Float>.stride
             )
             var current = try context.makeBuffer(
-                length: initialBytes, label: "TRELLIS shape decoder from-latent"
+                length: initialBytes, label: "TRELLIS texture decoder from-latent"
             )
             try dense.linearF16WeightsF32Output(
                 input: latent, checkpoint: checkpointBuffer,
@@ -77,39 +77,37 @@ public final class ShapeSparseDecoder: @unchecked Sendable {
             var currentNeighborhood = try SparseNeighborhood3x3(
                 coordinates: currentCoordinates, spatialShape: currentShape
             )
-            var currentNeighborBuffer = try requireShapeDecoderBuffer(
+            var currentNeighborBuffer = try requireTextureDecoderBuffer(
                 currentNeighborhood.makeMetalBuffer(context: context)
             )
-            var guides: [SparseSubdivision2x] = []
-            var guideLogits: [MTLBuffer] = []
-            for stage in Self.stageChannels.indices {
-                let channels = Self.stageChannels[stage]
-                for blockIndex in 0..<Self.stageBlocks[stage] {
+            for stage in ShapeSparseDecoder.stageChannels.indices {
+                let channels = ShapeSparseDecoder.stageChannels[stage]
+                for blockIndex in 0..<ShapeSparseDecoder.stageBlocks[stage] {
                     let layout = try SparseConvNeXtOffsets(
                         checkpoint: checkpoint, stage: stage,
                         block: blockIndex, channels: channels
                     )
-                    let elements = try shapeDecoderProduct(
+                    let elements = try textureDecoderProduct(
                         currentCoordinates.count, channels
                     )
-                    let bytes = try shapeDecoderProduct(
+                    let bytes = try textureDecoderProduct(
                         elements, MemoryLayout<Float>.stride
                     )
-                    let expandedBytes = try shapeDecoderProduct(bytes, 4)
+                    let expandedBytes = try textureDecoderProduct(bytes, 4)
                     let convolutionOutput = try context.makeBuffer(
-                        length: bytes, label: "TRELLIS decoder ConvNeXt convolution"
+                        length: bytes, label: "TRELLIS texture ConvNeXt convolution"
                     )
                     let normalized = try context.makeBuffer(
-                        length: bytes, label: "TRELLIS decoder ConvNeXt normalization"
+                        length: bytes, label: "TRELLIS texture ConvNeXt normalization"
                     )
                     let expanded = try context.makeBuffer(
-                        length: expandedBytes, label: "TRELLIS decoder ConvNeXt expansion"
+                        length: expandedBytes, label: "TRELLIS texture ConvNeXt expansion"
                     )
                     let branch = try context.makeBuffer(
-                        length: bytes, label: "TRELLIS decoder ConvNeXt branch"
+                        length: bytes, label: "TRELLIS texture ConvNeXt branch"
                     )
                     let output = try context.makeBuffer(
-                        length: bytes, label: "TRELLIS decoder ConvNeXt output"
+                        length: bytes, label: "TRELLIS texture ConvNeXt output"
                     )
                     try convNeXt(
                         input: current, neighbors: currentNeighborBuffer,
@@ -120,29 +118,27 @@ public final class ShapeSparseDecoder: @unchecked Sendable {
                     )
                     current = output
                 }
-                guard stage < Self.stageChannels.count - 1 else { continue }
-                let outputChannels = Self.stageChannels[stage + 1]
+                guard stage < ShapeSparseDecoder.stageChannels.count - 1 else { continue }
+                let outputChannels = ShapeSparseDecoder.stageChannels[stage + 1]
                 let c2sLayout = try SparseC2SCheckpointLayout(
                     checkpoint: checkpoint, stage: stage,
-                    block: Self.stageBlocks[stage],
-                    inputChannels: channels, outputChannels: outputChannels
+                    block: ShapeSparseDecoder.stageBlocks[stage],
+                    inputChannels: channels, outputChannels: outputChannels,
+                    predictsSubdivision: false
                 )
                 let result = try c2s(
                     input: current, coordinates: currentCoordinates,
                     spatialShape: currentShape, neighborBuffer: currentNeighborBuffer,
                     checkpoint: checkpointBuffer, layout: c2sLayout,
-                    inputChannels: channels, outputChannels: outputChannels
+                    inputChannels: channels, outputChannels: outputChannels,
+                    guide: subdivisionGuides[stage]
                 )
                 guard let features = result.features,
                       let neighbors = result.neighborBuffer else {
                     throw NativeRuntimeError.invalidArgument(
-                        "shape decoder subdivision removed every active voxel"
+                        "texture decoder guide removed every active voxel"
                     )
                 }
-                guides.append(result.subdivision)
-                guideLogits.append(try requireShapeDecoderBuffer(
-                    result.subdivisionLogits
-                ))
                 current = features
                 currentCoordinates = result.coordinates
                 currentShape = result.neighborhood.spatialShape
@@ -150,62 +146,66 @@ public final class ShapeSparseDecoder: @unchecked Sendable {
                 currentNeighborBuffer = neighbors
             }
             let finalCount = currentCoordinates.count
-            let normalizedElements = try shapeDecoderProduct(finalCount, 64)
-            let normalizedBytes = try shapeDecoderProduct(
+            let normalizedElements = try textureDecoderProduct(finalCount, 64)
+            let normalizedBytes = try textureDecoderProduct(
                 normalizedElements, MemoryLayout<Float>.stride
             )
             let normalized = try context.makeBuffer(
-                length: normalizedBytes, label: "TRELLIS shape decoder final normalization"
+                length: normalizedBytes, label: "TRELLIS texture decoder final normalization"
             )
             try normalization.layerNormF32WeightsF16(
                 input: current, checkpoint: checkpointBuffer,
                 rows: finalCount, channels: 64, epsilon: 1e-5, output: normalized
             )
-            let rawElements = try shapeDecoderProduct(finalCount, 7)
-            let rawBytes = try shapeDecoderProduct(
+            let rawElements = try textureDecoderProduct(finalCount, 6)
+            let rawBytes = try textureDecoderProduct(
                 rawElements, MemoryLayout<Float>.stride
             )
             let rawHead = try context.makeBuffer(
-                length: rawBytes, label: "TRELLIS shape decoder raw head"
+                length: rawBytes, label: "TRELLIS texture decoder raw head"
             )
             try dense.linearF16WeightsF32Output(
                 input: normalized, checkpoint: checkpointBuffer,
                 weightOffset: Int(outputWeight.fileOffset),
                 biasOffset: Int(outputBias.fileOffset),
-                rows: finalCount, inputChannels: 64, outputChannels: 7,
+                rows: finalCount, inputChannels: 64, outputChannels: 6,
                 output: rawHead
             )
-            return ShapeSparseDecoderResult(
-                rawHead: rawHead, coordinates: currentCoordinates,
-                spatialShape: currentShape, subdivisionGuides: guides,
-                subdivisionLogits: guideLogits
+            let pbrFields = try context.makeBuffer(
+                length: rawBytes, label: "TRELLIS decoded PBR fields"
+            )
+            try pbr(raw: rawHead, count: rawElements, output: pbrFields)
+            return TextureSparseDecoderResult(
+                rawHead: rawHead, pbrFields: pbrFields,
+                coordinates: currentCoordinates,
+                spatialShape: currentShape
             )
         }
     }
 }
 
-private func shapeDecoderProduct(_ lhs: Int, _ rhs: Int) throws -> Int {
-    let result = lhs.multipliedReportingOverflow(by: rhs)
-    guard lhs >= 0, rhs >= 0, !result.overflow else {
-        throw NativeRuntimeError.invalidArgument("shape decoder tensor size overflows Int")
-    }
-    return result.partialValue
-}
-
-private func shapeDecoderTensor(
+private func textureDecoderTensor(
     _ checkpoint: MappedCheckpoint, _ name: String,
     _ dtype: TensorDataType, _ shape: [UInt64]
 ) throws -> TensorDescriptor {
     let descriptor = try checkpoint.descriptor(named: name)
     guard descriptor.dtype == dtype, descriptor.shape == shape else {
-        throw NativeRuntimeError.invalidArgument("\(name) does not match shape decoder contract")
+        throw NativeRuntimeError.invalidArgument("\(name) does not match texture decoder contract")
     }
     return descriptor
 }
 
-private func requireShapeDecoderBuffer(_ value: MTLBuffer?) throws -> MTLBuffer {
+private func requireTextureDecoderBuffer(_ value: MTLBuffer?) throws -> MTLBuffer {
     guard let value else {
-        throw NativeRuntimeError.invalidArgument("shape decoder has no active sparse coordinates")
+        throw NativeRuntimeError.invalidArgument("texture decoder has no active sparse coordinates")
     }
     return value
+}
+
+private func textureDecoderProduct(_ lhs: Int, _ rhs: Int) throws -> Int {
+    let result = lhs.multipliedReportingOverflow(by: rhs)
+    guard lhs >= 0, rhs >= 0, !result.overflow else {
+        throw NativeRuntimeError.invalidArgument("texture decoder tensor size overflows Int")
+    }
+    return result.partialValue
 }
