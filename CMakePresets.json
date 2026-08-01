@@ -1,0 +1,45 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "trellis2-z-order",
+      "displayName": "TRELLIS.2 Z-order (Metal)",
+      "inherits": "base",
+      "cacheVariables": {
+        "KG_BUILD_TRELLIS2_Z_ORDER": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "trellis2-z-order",
+      "configurePreset": "trellis2-z-order",
+      "jobs": 0
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "trellis2-z-order",
+      "configurePreset": "trellis2-z-order",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

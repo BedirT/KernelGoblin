@@ -1,0 +1,4 @@
+interface:
+  display_name: "Port GPU Kernel"
+  short_description: "Port and verify model GPU kernels"
+  default_prompt: "Use $port-gpu-kernel to port and verify a model GPU kernel."

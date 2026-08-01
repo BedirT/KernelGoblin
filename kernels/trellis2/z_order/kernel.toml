@@ -1,0 +1,28 @@
+id = "trellis2/z_order"
+description = "O-Voxel 10-bit 3D Morton encode/decode"
+model = "microsoft/TRELLIS.2"
+operation = "z_order_encode_decode"
+port = "cuda-to-metal"
+backends = ["cpu", "metal"]
+cmake_preset = "trellis2-z-order"
+benchmark = "kernels/trellis2/z_order/kg_trellis2_z_order_bench"
+
+[upstream]
+repository = "https://github.com/microsoft/TRELLIS.2"
+revision = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
+sources = [
+  "o-voxel/src/serialize/z_order.cu",
+  "o-voxel/src/serialize/z_order.h",
+]
+license = "MIT"
+
+[domain]
+coordinate_type = "uint32"
+coordinate_bits = 10
+minimum = 0
+maximum = 1023
+
+[verification]
+comparison = "bit-exact"
+random_seed = 12648430
+random_cases = 65536
