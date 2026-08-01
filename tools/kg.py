@@ -546,9 +546,34 @@ def command_model_native_benchmark(args: argparse.Namespace) -> None:
     ])
 
 
+def print_native_benchmark_environment() -> None:
+    for label, command in (
+        ("swift", ["swift", "--version"]),
+        ("metal", ["xcrun", "metal", "--version"]),
+    ):
+        result = subprocess.run(
+            command, cwd=ROOT, check=True, capture_output=True, text=True,
+        )
+        first_line = (result.stdout or result.stderr).splitlines()[0]
+        print(f"toolchain_{label}=\"{first_line}\"", flush=True)
+    profile = subprocess.run(
+        ["system_profiler", "SPDisplaysDataType", "-json"],
+        cwd=ROOT, check=True, capture_output=True, text=True,
+    )
+    devices = json.loads(profile.stdout).get("SPDisplaysDataType", [])
+    gpu = devices[0] if devices else {}
+    print(
+        "hardware_gpu_model=\"{}\" hardware_gpu_cores={}".format(
+            gpu.get("sppci_model", "unknown"), gpu.get("sppci_cores", "unknown")
+        ),
+        flush=True,
+    )
+
+
 def command_model_native_pbr_benchmark(args: argparse.Namespace) -> None:
     if args.model != "trellis2":
         raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    print_native_benchmark_environment()
     run([
         "swift", "run", "-c", "release", "kg-trellis2-pbr-bake-bench",
         "--texture-size", str(args.texture_size),

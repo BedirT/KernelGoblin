@@ -149,6 +149,7 @@ func run() throws {
     for _ in 0..<options.iterations {
         durations.append(try autoreleasepool { try timedExecute() })
     }
+    let orderedDurations = durations
     durations.sort()
     let memory = context.arena!.snapshot()
     let process = ProcessInfo.processInfo
@@ -173,7 +174,9 @@ func run() throws {
                  quantileR7(durations, 0.5) * 1000,
                  quantileR7(durations, 0.95) * 1000,
                  durations[0] * 1000, durations.last! * 1000))
-    print("raw_samples_ms=" + durations.map { String(format: "%.6f", $0 * 1000) }.joined(separator: ","))
+    print("raw_samples_ms=" + orderedDurations.map {
+        String(format: "%.6f", $0 * 1000)
+    }.joined(separator: ","))
 }
 
 func checkedProduct(_ lhs: Int, _ rhs: Int) throws -> Int {
