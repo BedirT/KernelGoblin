@@ -21,6 +21,13 @@ built in **Swift + Metal with no PyTorch dependency**. The working Torch/MPS
 port stays around as a pinned conformance oracle while the native runtime earns
 its way to parity.
 
+That boundary is enforced, not ceremonial. `./kg validate` checks the declared
+native source roots, rejects Python/Torch imports there, and keeps the Swift
+package dependency-free. Torch can create immutable comparison fixtures under
+`ports/trellis2/`; it is never part of native setup, testing, or inference.
+KernelGoblin itself remains multi-backend so future CUDA-to-CUDA work still has
+a home.
+
 ## So, What Did We Actually Run?
 
 This input went through the pinned TRELLIS.2 graph on an Apple M3 Pro:
@@ -52,13 +59,16 @@ baseline is exactly what the native Metal runtime is here to replace.
 | TRELLIS timestep + shared adaLN | **Verified native Metal slice** | Real sinusoid, two-layer SiLU MLP, and 9,216-channel modulation; zero BF16 bit mismatches |
 | TRELLIS cross-transformer block | **Verified native Metal slice** | Real block 0 normalization, 3D RoPE, two-token self-attention, cross-attention, 8,192-channel MLP, adaLN, and residuals match a pinned Torch BF16 fixture with `0.01747` RMS error |
 | TRELLIS 30-block shape flow | **Verified native Metal stage** | Every production weight and block executes from the pinned 2.58 GB checkpoint; two-token final output matches the Torch oracle with `0.00615` RMS error |
+| TRELLIS 30-block texture flow | **Verified native Metal stage** | The separate pinned 2.58 GB texture checkpoint executes all 30 blocks with the real 64-channel noise-plus-shape input; final RMS error is `0.00733` |
+| Flow Euler + CFG orchestration | **Verified native Swift** | Exact 12-step schedule, interval CFG, rescaling, sequential positive/negative calls, shape and texture normalization, and real two-step checkpoint integrations |
+| Bounded Metal allocation | **Verified native foundation** | Heap-backed arena rejects overflow, records cumulative-requested/current/peak bytes, releases dead buffers, and covers both sampler-to-flow integrations |
 | CPU mesh to flexible dual grid | **Verified reference extension** | Pinned O-Voxel algorithm through LibTorch, AppleClang portability patch, tetrahedron fixtures; native Swift bridge remains |
 | Sparse PBR sampling and glTF packing | **Verified reference component** | Bounded sampling, xatlas seams, RGBA and metallic-roughness packing, GLB reload; native assembly remains |
 | TRELLIS.2 512 image-to-3D | **Verified Torch/MPS oracle** | Default 12 steps, reloadable 61 MB GLB |
 | TRELLIS.2 1024 cascade | **Verified Torch/MPS oracle** | Default 12 steps, 15.28 GB maximum RSS, reloadable 272.8 MB GLB |
 | Full PBR image-to-3D | **In progress** | Native UV and synthetic bake pass; full model artifact still needs final end-to-end proof |
 | Existing-mesh texturing | **In progress** | CPU voxelizer, UV policy, staged reference CLI, and PBR baker exist; full native model path remains |
-| Swift + Metal full model | **In progress** | Checkpoint mapping, conditioning, 3D RoPE, fused attention, and the complete 30-block shape-flow stage pass; the other model stages remain |
+| Swift + Metal full model | **In progress** | Both complete 30-block SLat flows and native samplers pass; full DINO, sparse structure, decoders, mesh extraction, and native PBR assembly remain |
 
 That distinction matters. A kernel can be verified while a pipeline is still
 unfinished. We do not promote the larger claim just because a nearby test is
@@ -138,6 +148,7 @@ and Ninja.
 
 # Native Swift + Metal checkpoint and model-layer tests
 ./kg model native-setup trellis2
+./kg model native-audit trellis2
 ./kg model native-test trellis2
 
 # Two independently buildable Metal kernels
@@ -145,6 +156,10 @@ and Ninja.
 ./kg test trellis2/uv_raster
 ./kg benchmark trellis2/uv_raster
 ```
+
+`kg-trellis2` itself has no Python or Torch dependency. The lightweight `./kg`
+developer wrapper uses the system Python standard library; commands in the
+reference section below create a separate, ignored Torch environment.
 
 The native CLI can inspect a real safetensors checkpoint without Torch:
 
@@ -204,18 +219,21 @@ meaningful across different reduction trees. The two-token fixture exercises
 real Q/K scoring; every output is finite, maximum absolute error is `0.25`,
 and aggregate RMS error is `0.01747` over 3,072 values.
 
-This block API currently represents one sparse sequence. It deliberately does
-not accept concatenated batches until segment offsets are carried into fused
-attention; treating two samples as one token list would allow them to
-cross-attend and would be incorrect.
+The fused attention primitive now accepts validated signed-32-bit-compatible
+segment offsets and proves that packed samples cannot cross-attend. The complete
+SLat graph still enforces batch one because timestep modulation also needs a
+per-token batch map before multi-sample execution would be correct.
 
-The standard `./kg model native-test trellis2` command also carries that block
-through the complete 30-block shape-flow stage with every real production
-weight. Its deliberately tiny
-two-token input keeps the acceptance test quick while still covering the whole
-stage graph. Final output maximum error is `0.01557` and RMS error is `0.00615`
-over 64 F32 values. This proves stage conformance, not representative sparse-token
-memory use or generation speed; those are separate gates.
+The standard `./kg model native-test trellis2` command carries that block
+through both complete 30-block SLat flows with their separate real production
+checkpoints. It also drives each flow repeatedly through the native Euler
+sampler and keeps temporary allocations inside a hard Metal heap budget. The
+deliberately tiny two-token inputs keep this acceptance test quick while still
+covering both full graphs. Shape-flow RMS error is `0.00615`; texture-flow RMS
+error is `0.00733`. The two-step shape trajectory reports bounded numerical
+drift separately because CFG feeds small cross-backend reduction differences
+back into the next model call. These are graph and orchestration proofs, not
+representative sparse-token memory or generation-speed claims.
 
 On the development M3 Pro, the current UV raster benchmark reports:
 
@@ -294,8 +312,9 @@ for the newest native kernel boundary.
 ### Now
 
 - Finish the reusable Swift tensor runtime and page-aligned stage installer.
-- Add segmented sparse attention and exercise the verified shape-flow stage at
-  representative token counts under a hard memory budget.
+- Replace the correctness-first quadratic attention kernel with a tiled native
+  implementation, then exercise both flows at captured production token counts
+  under the new hard Metal arena budget.
 - Complete the native DINOv3, TRELLIS flow, decoder, sampler, and PBR stages.
 
 ### Next

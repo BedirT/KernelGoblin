@@ -33,7 +33,7 @@ public enum NativeRuntimeError: Error, CustomStringConvertible, Equatable {
         switch self {
         case .allocationFailed(let detail): detail
         case .capacityExceeded(let requested, let available):
-            "bounded scratch requested \(requested) bytes with \(available) available"
+            "bounded allocation requested \(requested) bytes with \(available) available"
         case .invalidArgument(let detail): detail
         }
     }

@@ -129,6 +129,28 @@ struct CheckpointTests {
         }
     }
 
+    @Test("Metal arena records peak use, rejects overflow, and releases buffers")
+    func boundedMetalArena() throws {
+        let context = try MetalContext(arenaCapacity: 64 * 1024)
+        let arena = try #require(context.arena)
+        var buffer: MTLBuffer? = try context.makeBuffer(
+            length: 16 * 1024, label: "arena lifetime test"
+        )
+        let live = arena.snapshot()
+        #expect(live.capacityBytes == 64 * 1024)
+        #expect(live.usedBytes >= 16 * 1024)
+        #expect(live.peakUsedBytes == live.usedBytes)
+        #expect(live.cumulativeRequestedBytes == 16 * 1024)
+        #expect(live.allocationCount == 1)
+        #expect(throws: NativeRuntimeError.self) {
+            try context.makeBuffer(length: 128 * 1024, label: "arena overflow")
+        }
+        buffer = nil
+        #expect(arena.snapshot().usedBytes == 0)
+        #expect(arena.snapshot().peakUsedBytes == live.peakUsedBytes)
+        _ = buffer
+    }
+
     @Test("Metal resources compile on the physical device")
     func compilesMetalLibrary() throws {
         let context = try MetalContext()
@@ -449,6 +471,271 @@ struct CheckpointTests {
         }
     }
 
+    @Test("Metal segmented attention isolates sparse samples")
+    func segmentedAttention() throws {
+        let context = try MetalContext()
+        let kernel = try AttentionKernel(context: context)
+        let heads = 2, dimensions = 8
+        let querySegments = try AttentionSegments(offsets: [0, 2, 5])
+        let keySegments = try AttentionSegments(offsets: [0, 3, 5])
+        var queries = (0..<(querySegments.totalCount * heads * dimensions)).map {
+            Float(cos(Double($0) * 0.17) * 0.8)
+        }
+        var keys = (0..<(keySegments.totalCount * heads * dimensions)).map {
+            Float(sin(Double($0) * 0.13) * 0.7)
+        }
+        var values = (0..<(keySegments.totalCount * heads * dimensions)).map {
+            Float(cos(Double($0) * 0.11) - 0.2)
+        }
+        let queryBuffer = try #require(context.device.makeBuffer(
+            bytes: &queries, length: queries.count * 4, options: .storageModeShared
+        ))
+        let keyBuffer = try #require(context.device.makeBuffer(
+            bytes: &keys, length: keys.count * 4, options: .storageModeShared
+        ))
+        let valueBuffer = try #require(context.device.makeBuffer(
+            bytes: &values, length: values.count * 4, options: .storageModeShared
+        ))
+        let output = try #require(context.device.makeBuffer(
+            length: queries.count * 4, options: .storageModeShared
+        ))
+        try kernel.segmentedF32(
+            queries: queryBuffer, keys: keyBuffer, values: valueBuffer,
+            querySegments: querySegments, keySegments: keySegments,
+            heads: heads, dimensions: dimensions, output: output
+        )
+        let actual = output.contents().assumingMemoryBound(to: Float.self)
+        let scale = 1 / sqrt(Float(dimensions))
+        for segment in 0..<querySegments.segmentCount {
+            let queryRange = querySegments.offsets[segment]..<querySegments.offsets[segment + 1]
+            let keyRange = keySegments.offsets[segment]..<keySegments.offsets[segment + 1]
+            for query in queryRange {
+                for head in 0..<heads {
+                    let queryBase = (query * heads + head) * dimensions
+                    var scores: [Float] = []
+                    for key in keyRange {
+                        let keyBase = (key * heads + head) * dimensions
+                        var score: Float = 0
+                        for dimension in 0..<dimensions {
+                            score.addProduct(
+                                queries[queryBase + dimension], keys[keyBase + dimension]
+                            )
+                        }
+                        scores.append(score * scale)
+                    }
+                    let maximum = scores.max()!
+                    let weights = scores.map { exp($0 - maximum) }
+                    let denominator = weights.reduce(0, +)
+                    for dimension in 0..<dimensions {
+                        var expected: Float = 0
+                        for (localKey, key) in keyRange.enumerated() {
+                            let keyBase = (key * heads + head) * dimensions
+                            expected += weights[localKey] / denominator * values[keyBase + dimension]
+                        }
+                        #expect(abs(actual[queryBase + dimension] - expected) < 3e-6)
+                    }
+                }
+            }
+        }
+        #expect(throws: NativeRuntimeError.self) {
+            try AttentionSegments(offsets: [0, 2, 1])
+        }
+        let layoutWithEmptyPrefix = try AttentionSegments(offsets: [0, 0, 2])
+        #expect(layoutWithEmptyPrefix.segmentCount == 2)
+        let wrongKeySegments = try AttentionSegments(offsets: [0, 5])
+        #expect(throws: NativeRuntimeError.self) {
+            try kernel.segmentedF32(
+                queries: queryBuffer, keys: keyBuffer, values: valueBuffer,
+                querySegments: querySegments, keySegments: wrongKeySegments,
+                heads: heads, dimensions: dimensions, output: output
+            )
+        }
+        #expect(throws: NativeRuntimeError.self) {
+            try kernel.segmentedF32(
+                queries: queryBuffer, keys: keyBuffer, values: valueBuffer,
+                querySegments: querySegments, keySegments: keySegments,
+                heads: heads, dimensions: dimensions, output: keyBuffer
+            )
+        }
+        #expect(throws: NativeRuntimeError.self) {
+            try kernel.segmentedF32(
+                queries: queryBuffer, keys: keyBuffer, values: valueBuffer,
+                querySegments: querySegments, keySegments: keySegments,
+                heads: heads, dimensions: dimensions, output: valueBuffer
+            )
+        }
+    }
+
+    @Test("native sparse Flow Euler and CFG match the pinned Torch oracle")
+    func sparseFlowEuler() throws {
+        let context = try MetalContext()
+        let parameters = try FlowEulerParameters.shape512()
+        let expectedSchedule = [
+            1.0, 0.9705882352941178, 0.9374999999999999, 0.9,
+            0.8571428571428571, 0.8076923076923076, 0.75,
+            0.6818181818181819, 0.6, 0.5, 0.3750000000000001,
+            0.21428571428571436, 0.0,
+        ]
+        let schedule = parameters.schedule()
+        try #require(schedule.count == 12)
+        for index in schedule.indices {
+            #expect(abs(schedule[index].time - expectedSchedule[index]) < 2e-15)
+            #expect(abs(schedule[index].previousTime - expectedSchedule[index + 1]) < 2e-15)
+        }
+
+        let layout = try AttentionSegments(offsets: [0, 2, 5])
+        let channels = 4
+        let noiseCount = layout.totalCount * channels
+        var noise = (0..<noiseCount).map { index -> Float in
+            let periodic = Double((index % 7) - 3) * 0.11
+            let trend = Double(index) * 0.003
+            return Float(periodic + trend)
+        }
+        let noiseBuffer = try #require(context.device.makeBuffer(
+            bytes: &noise, length: noise.count * 4, options: .storageModeShared
+        ))
+        var calls: [(String, Float)] = []
+        var previousTrace: [[Float]] = []
+        var x0Trace: [[Float]] = []
+        let result = try FlowEulerSampler(
+            context: context, parameters: parameters
+        ).sampleF32(
+            noise: noiseBuffer, layout: layout, channels: channels,
+            trace: { _, previous, x0 in
+                let previousValues = previous.contents().assumingMemoryBound(to: Float.self)
+                let x0Values = x0.contents().assumingMemoryBound(to: Float.self)
+                previousTrace.append((0..<noise.count).map { previousValues[$0] })
+                x0Trace.append((0..<noise.count).map { x0Values[$0] })
+            },
+            predictor: { state, timestep, pass in
+                let name: String
+                let bias: Float
+                switch pass {
+                case .positive:
+                    name = "positive"
+                    bias = 0.075
+                case .negative:
+                    name = "negative"
+                    bias = -0.125
+                }
+                calls.append((name, timestep))
+                let output = try #require(context.device.makeBuffer(
+                    length: noise.count * 4, options: .storageModeShared
+                ))
+                let inputValues = state.contents().assumingMemoryBound(to: Float.self)
+                let outputValues = output.contents().assumingMemoryBound(to: Float.self)
+                for index in noise.indices {
+                    let stateTerm = inputValues[index] * 0.125
+                    let timestepTerm = timestep * 0.0001
+                    let indexTerm = Float(index) * 0.002
+                    outputValues[index] = stateTerm + timestepTerm + indexTerm + bias
+                }
+                return output
+            }
+        )
+        #expect(result.modelCallCount == 21)
+        #expect(calls.count == 21)
+        for index in 0..<18 {
+            #expect(calls[index].0 == (index.isMultiple(of: 2) ? "positive" : "negative"))
+        }
+        for index in 18..<21 { #expect(calls[index].0 == "positive") }
+
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "flow-euler-sparse", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: fixtureURL) ==
+                "4a104bffebb6e6164732f12d8f186dbd9fbd5b99889623c6f842703c7c9b3c47"
+        )
+        let golden = try Data(contentsOf: fixtureURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        try #require(golden.count == noise.count)
+        let actual = result.samples.contents().assumingMemoryBound(to: Float.self)
+        for index in golden.indices {
+            #expect(abs(actual[index] - golden[index]) < 2e-5)
+        }
+        let traceURL = try #require(Bundle.module.url(
+            forResource: "flow-euler-sparse", withExtension: "f32.trace",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: traceURL) ==
+                "c39475758c9f4bdebe1de863d4a5a5346f5724f7c81e09e3d7adbe5a53eef00d"
+        )
+        let trace = try Data(contentsOf: traceURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        try #require(previousTrace.count == 12 && x0Trace.count == 12)
+        try #require(trace.count == 24 * noise.count)
+        for step in 0..<12 {
+            for index in noise.indices {
+                #expect(abs(previousTrace[step][index] - trace[step * noise.count + index]) < 2e-5)
+                let x0Offset = (12 + step) * noise.count + index
+                #expect(abs(x0Trace[step][index] - trace[x0Offset]) < 2e-5)
+            }
+        }
+
+        let textureResult = try FlowEulerSampler(
+            context: context, parameters: .texture512()
+        ).sampleF32(
+            noise: noiseBuffer, layout: layout, channels: channels,
+            predictor: { state, _, pass in
+                if case .negative = pass {
+                    Issue.record("texture guidance strength 1 must not request negative conditioning")
+                }
+                return state
+            }
+        )
+        #expect(textureResult.modelCallCount == 12)
+    }
+
+    @Test("texture-flow input preserves noise-first normalized-shape layout")
+    func textureFlowInputLayout() throws {
+        let context = try MetalContext()
+        let tokens = 2
+        var noise = (0..<(tokens * 32)).map { Float($0) * 0.01 - 0.2 }
+        var shape = (0..<(tokens * 32)).map { index in
+            let channel = index % 32
+            return SLatPipelineMath.shapeMean[channel]
+                + SLatPipelineMath.shapeStandardDeviation[channel]
+                    * Float(index / 32 + channel) * 0.02
+        }
+        let noiseBuffer = try #require(context.device.makeBuffer(
+            bytes: &noise, length: noise.count * 4, options: .storageModeShared
+        ))
+        let shapeBuffer = try #require(context.device.makeBuffer(
+            bytes: &shape, length: shape.count * 4, options: .storageModeShared
+        ))
+        let math = SLatPipelineMath(context: context)
+        let input = try math.makeTextureInputF32(
+            noise: noiseBuffer, shape: shapeBuffer, tokens: tokens
+        )
+        let values = input.contents().assumingMemoryBound(to: Float.self)
+        for token in 0..<tokens {
+            for channel in 0..<32 {
+                #expect(values[token * 64 + channel] == noise[token * 32 + channel])
+                let expected = Float(token + channel) * 0.02
+                #expect(abs(values[token * 64 + 32 + channel] - expected) < 2e-6)
+            }
+        }
+        var normalizedShape = (0..<(tokens * 32)).map {
+            Float($0 / 32 + $0 % 32) * 0.02
+        }
+        let normalizedShapeBuffer = try #require(context.device.makeBuffer(
+            bytes: &normalizedShape, length: normalizedShape.count * 4,
+            options: .storageModeShared
+        ))
+        let denormalizedShape = try math.denormalizeShapeF32(
+            normalizedShapeBuffer, tokens: tokens
+        )
+        let shapeValues = denormalizedShape.contents().assumingMemoryBound(to: Float.self)
+        for index in shape.indices {
+            #expect(abs(shapeValues[index] - shape[index]) < 2e-6)
+        }
+    }
+
     @Test("Metal 3D RoPE matches the pinned TRELLIS coordinate formula")
     func rotaryPosition3D() throws {
         let context = try MetalContext()
@@ -505,6 +792,430 @@ struct CheckpointTests {
                 }
             }
         }
+    }
+
+    @Test(
+        "native shape sampler drives the complete real TRELLIS.2 flow",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"] != nil,
+            "Set KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT to execute sampler integration"
+        )
+    )
+    func realSLatShapeSamplerGolden() throws {
+        let path = try #require(
+            ProcessInfo.processInfo.environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"]
+        )
+        let context = try MetalContext(arenaCapacity: 16 * 1024 * 1024)
+        let checkpoint = try MappedCheckpoint(
+            url: URL(fileURLWithPath: path), device: context.device
+        )
+        try #require(
+            checkpoint.sha256() ==
+                "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f"
+        )
+        let tokens = 2
+        let conditioningTokens = 2
+        var noise = (0..<(tokens * 32)).map {
+            Float(sin(Double($0) * 0.021) * 0.30)
+        }
+        var positiveConditioning = (0..<(conditioningTokens * 1024)).map {
+            Float(sin(Double($0) * 0.015) * 0.25)
+        }
+        var negativeConditioning = [Float](
+            repeating: 0, count: conditioningTokens * 1024
+        )
+        var coordinates: [Int32] = [0, 0, 0, 0, 0, 1, 2, 3]
+        let noiseBuffer = try #require(context.device.makeBuffer(
+            bytes: &noise, length: noise.count * 4, options: .storageModeShared
+        ))
+        let positiveBuffer = try #require(context.device.makeBuffer(
+            bytes: &positiveConditioning, length: positiveConditioning.count * 4,
+            options: .storageModeShared
+        ))
+        let negativeBuffer = try #require(context.device.makeBuffer(
+            bytes: &negativeConditioning, length: negativeConditioning.count * 4,
+            options: .storageModeShared
+        ))
+        let coordinateBuffer = try #require(context.device.makeBuffer(
+            bytes: &coordinates, length: coordinates.count * 4,
+            options: .storageModeShared
+        ))
+        var modelTrace: [[Float]] = []
+        var samplerTrace: [[Float]] = []
+
+        let result = try SLatFlowPipeline(context: context).sampleShapeF32(
+            noise: noiseBuffer, coordinates: coordinateBuffer,
+            positiveConditioning: positiveBuffer,
+            negativeConditioning: negativeBuffer,
+            checkpoint: checkpoint, tokens: tokens,
+            conditioningTokens: conditioningTokens,
+            parameters: .shape512(steps: 2),
+            modelTrace: { call, _, output in
+                #expect(call == modelTrace.count)
+                let values = output.contents().assumingMemoryBound(to: Float.self)
+                modelTrace.append((0..<noise.count).map { values[$0] })
+            },
+            samplerTrace: { step, state in
+                #expect(step == samplerTrace.count)
+                let values = state.contents().assumingMemoryBound(to: Float.self)
+                samplerTrace.append((0..<noise.count).map { values[$0] })
+            }
+        )
+        #expect(result.modelCallCount == 4)
+        let memory = try #require(context.arena).snapshot()
+        #expect(memory.peakUsedBytes < memory.capacityBytes)
+        print(
+            "shape sampler arena: peak=\(memory.peakUsedBytes) " +
+            "live=\(memory.usedBytes) allocations=\(memory.allocationCount)"
+        )
+
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "slat-shape-sampler-2step", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: fixtureURL) ==
+                "e8c2fe1c4f1cd549b7d6b406930f73204d6b1626df03a2e4c921928ee5c7288d"
+        )
+        let golden = try Data(contentsOf: fixtureURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        try #require(golden.count == noise.count)
+        let actual = result.latent.contents().assumingMemoryBound(to: Float.self)
+        var maximumAbsoluteError: Float = 0
+        var squaredError: Double = 0
+        var goldenSquaredMagnitude: Double = 0
+        var goldenMaximumMagnitude: Float = 0
+        for index in golden.indices {
+            try #require(actual[index].isFinite)
+            let error = abs(actual[index] - golden[index])
+            maximumAbsoluteError = max(maximumAbsoluteError, error)
+            squaredError += Double(error * error)
+            goldenSquaredMagnitude += Double(golden[index] * golden[index])
+            goldenMaximumMagnitude = max(goldenMaximumMagnitude, abs(golden[index]))
+        }
+        let rmsError = sqrt(squaredError / Double(golden.count))
+        let goldenRMS = sqrt(goldenSquaredMagnitude / Double(golden.count))
+        let traceURL = try #require(Bundle.module.url(
+            forResource: "slat-shape-sampler-2step", withExtension: "f32.trace",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: traceURL) ==
+                "049b3f9bd2df257975e48a269a15d720134193a21528974fd9c131f3ac808d7f"
+        )
+        let expectedTrace = try Data(contentsOf: traceURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        try #require(modelTrace.count == 4 && samplerTrace.count == 2)
+        try #require(expectedTrace.count == 6 * noise.count)
+        let maximumCaps: [Float] = [0.04, 0.02, 0.30, 0.25, 0.07, 0.55]
+        let rmsCaps: [Double] = [0.016, 0.008, 0.11, 0.10, 0.03, 0.23]
+        for traceIndex in 0..<6 {
+            let values = traceIndex < 4 ? modelTrace[traceIndex] : samplerTrace[traceIndex - 4]
+            var traceSquaredError: Double = 0
+            var traceMaximumError: Float = 0
+            for index in values.indices {
+                let error = abs(values[index] - expectedTrace[traceIndex * noise.count + index])
+                traceMaximumError = max(traceMaximumError, error)
+                traceSquaredError += Double(error * error)
+            }
+            let traceRMS = sqrt(traceSquaredError / Double(values.count))
+            print("shape sampler trace \(traceIndex): max=\(traceMaximumError) rms=\(traceRMS)")
+            #expect(traceMaximumError <= maximumCaps[traceIndex])
+            #expect(traceRMS <= rmsCaps[traceIndex])
+        }
+        let maximumScaleRatio = maximumAbsoluteError / goldenMaximumMagnitude
+        let normalizedRMS = rmsError / goldenRMS
+        print(
+            "two-step shape sampler final: max=\(maximumAbsoluteError) rms=\(rmsError) " +
+            "normalized_rms=\(normalizedRMS) max_scale_ratio=\(maximumScaleRatio)"
+        )
+        // The first CFG pair is the strict graph-parity gate; later caps bound
+        // deterministic trajectory drift after feeding Metal results back in.
+        #expect(maximumScaleRatio <= 0.22)
+        #expect(normalizedRMS <= 0.22)
+    }
+
+    @Test(
+        "native texture sampler drives the complete real TRELLIS.2 flow",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["KG_TRELLIS2_TEXTURE_FLOW_CHECKPOINT"] != nil,
+            "Set KG_TRELLIS2_TEXTURE_FLOW_CHECKPOINT to execute sampler integration"
+        )
+    )
+    func realSLatTextureSamplerGolden() throws {
+        let path = try #require(
+            ProcessInfo.processInfo.environment["KG_TRELLIS2_TEXTURE_FLOW_CHECKPOINT"]
+        )
+        let context = try MetalContext(arenaCapacity: 16 * 1024 * 1024)
+        let checkpoint = try MappedCheckpoint(
+            url: URL(fileURLWithPath: path), device: context.device
+        )
+        try #require(
+            checkpoint.sha256() ==
+                "8371aa1c5d13be79dcd5ddfd2cf3835e902e204dc34427169a1c702828e1a94d"
+        )
+        let tokens = 2
+        let conditioningTokens = 2
+        var noise = (0..<(tokens * 32)).map {
+            Float(sin(Double($0) * 0.021) * 0.30)
+        }
+        var shape = (0..<(tokens * 32)).map { index in
+            let channel = index % 32
+            let normalized = Float(cos(Double(index) * 0.017) * 0.20)
+            return normalized * SLatPipelineMath.shapeStandardDeviation[channel]
+                + SLatPipelineMath.shapeMean[channel]
+        }
+        var conditioning = (0..<(conditioningTokens * 1024)).map {
+            Float(sin(Double($0) * 0.015) * 0.25)
+        }
+        var coordinates: [Int32] = [0, 0, 0, 0, 0, 1, 2, 3]
+        let noiseBuffer = try #require(context.device.makeBuffer(
+            bytes: &noise, length: noise.count * 4, options: .storageModeShared
+        ))
+        let shapeBuffer = try #require(context.device.makeBuffer(
+            bytes: &shape, length: shape.count * 4, options: .storageModeShared
+        ))
+        let conditioningBuffer = try #require(context.device.makeBuffer(
+            bytes: &conditioning, length: conditioning.count * 4,
+            options: .storageModeShared
+        ))
+        let coordinateBuffer = try #require(context.device.makeBuffer(
+            bytes: &coordinates, length: coordinates.count * 4,
+            options: .storageModeShared
+        ))
+        var modelTrace: [[Float]] = []
+        var samplerTrace: [[Float]] = []
+        let pipeline = try SLatFlowPipeline(context: context)
+        let result = try pipeline.sampleTextureF32(
+            noise: noiseBuffer, shapeLatent: shapeBuffer,
+            coordinates: coordinateBuffer, positiveConditioning: conditioningBuffer,
+            checkpoint: checkpoint, tokens: tokens,
+            conditioningTokens: conditioningTokens,
+            parameters: .texture512(steps: 2),
+            modelTrace: { call, output in
+                #expect(call == modelTrace.count)
+                let values = output.contents().assumingMemoryBound(to: Float.self)
+                modelTrace.append((0..<noise.count).map { values[$0] })
+            },
+            samplerTrace: { step, state in
+                #expect(step == samplerTrace.count)
+                let values = state.contents().assumingMemoryBound(to: Float.self)
+                samplerTrace.append((0..<noise.count).map { values[$0] })
+            }
+        )
+        #expect(result.modelCallCount == 2)
+        let memory = try #require(context.arena).snapshot()
+        #expect(memory.peakUsedBytes < memory.capacityBytes)
+        print(
+            "texture sampler arena: peak=\(memory.peakUsedBytes) " +
+            "live=\(memory.usedBytes) allocations=\(memory.allocationCount)"
+        )
+
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "slat-texture-sampler-2step", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: fixtureURL) ==
+                "640bacbb2b3c8ba00498cd5e89eb2d17aee62259128b92d01866622ef0329fba"
+        )
+        let golden = try Data(contentsOf: fixtureURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        try #require(golden.count == noise.count)
+        let actual = result.latent.contents().assumingMemoryBound(to: Float.self)
+        var maximumAbsoluteError: Float = 0
+        var squaredError: Double = 0
+        var goldenSquaredMagnitude: Double = 0
+        var goldenMaximumMagnitude: Float = 0
+        for index in golden.indices {
+            try #require(actual[index].isFinite)
+            let error = abs(actual[index] - golden[index])
+            maximumAbsoluteError = max(maximumAbsoluteError, error)
+            squaredError += Double(error * error)
+            goldenSquaredMagnitude += Double(golden[index] * golden[index])
+            goldenMaximumMagnitude = max(goldenMaximumMagnitude, abs(golden[index]))
+        }
+        let rmsError = sqrt(squaredError / Double(golden.count))
+        let goldenRMS = sqrt(goldenSquaredMagnitude / Double(golden.count))
+
+        let traceURL = try #require(Bundle.module.url(
+            forResource: "slat-texture-sampler-2step", withExtension: "f32.trace",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: traceURL) ==
+                "2bca46d5a7d66a9cde0b68a4d88e3b800856fc1e74b55c401b47ca2eb15bc8b5"
+        )
+        let expectedTrace = try Data(contentsOf: traceURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        try #require(modelTrace.count == 2 && samplerTrace.count == 2)
+        try #require(expectedTrace.count == 4 * noise.count)
+        let maximumCaps: [Float] = [0.005, 0.035, 0.002, 0.025]
+        let rmsCaps: [Double] = [0.002, 0.015, 0.001, 0.012]
+        for traceIndex in 0..<4 {
+            let values = traceIndex < 2 ? modelTrace[traceIndex] : samplerTrace[traceIndex - 2]
+            var traceSquaredError: Double = 0
+            var traceMaximumError: Float = 0
+            for index in values.indices {
+                let error = abs(values[index] - expectedTrace[traceIndex * noise.count + index])
+                traceMaximumError = max(traceMaximumError, error)
+                traceSquaredError += Double(error * error)
+            }
+            let traceRMS = sqrt(traceSquaredError / Double(values.count))
+            print("texture sampler trace \(traceIndex): max=\(traceMaximumError) rms=\(traceRMS)")
+            #expect(traceMaximumError <= maximumCaps[traceIndex])
+            #expect(traceRMS <= rmsCaps[traceIndex])
+        }
+        let maximumScaleRatio = maximumAbsoluteError / goldenMaximumMagnitude
+        let normalizedRMS = rmsError / goldenRMS
+        print(
+            "two-step texture sampler final: max=\(maximumAbsoluteError) rms=\(rmsError) " +
+            "normalized_rms=\(normalizedRMS) max_scale_ratio=\(maximumScaleRatio)"
+        )
+        #expect(maximumScaleRatio <= 0.01)
+        #expect(normalizedRMS <= 0.01)
+    }
+
+    @Test(
+        "complete real TRELLIS.2 texture flow matches the pinned Torch oracle",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["KG_TRELLIS2_TEXTURE_FLOW_CHECKPOINT"] != nil,
+            "Set KG_TRELLIS2_TEXTURE_FLOW_CHECKPOINT to execute real-weight conformance"
+        )
+    )
+    func realSLatTextureFlowGolden() throws {
+        let path = try #require(
+            ProcessInfo.processInfo.environment["KG_TRELLIS2_TEXTURE_FLOW_CHECKPOINT"]
+        )
+        let context = try MetalContext()
+        let checkpoint = try MappedCheckpoint(
+            url: URL(fileURLWithPath: path), device: context.device
+        )
+        try #require(
+            checkpoint.sha256() ==
+                "8371aa1c5d13be79dcd5ddfd2cf3835e902e204dc34427169a1c702828e1a94d"
+        )
+        let tokens = 2
+        var features = [Float](repeating: 0, count: tokens * 64)
+        for token in 0..<tokens {
+            for channel in 0..<32 {
+                let index = token * 32 + channel
+                features[token * 64 + channel] = Float(sin(Double(index) * 0.021) * 0.30)
+                features[token * 64 + 32 + channel] = Float(cos(Double(index) * 0.017) * 0.20)
+            }
+        }
+        var timestep: [Float] = [650.25]
+        var conditioning = (0..<(2 * 1024)).map {
+            Float(sin(Double($0) * 0.015) * 0.25)
+        }
+        var coordinates: [Int32] = [0, 0, 0, 0, 0, 1, 2, 3]
+        let inputBuffer = try #require(context.device.makeBuffer(
+            bytes: &features, length: features.count * 4, options: .storageModeShared
+        ))
+        let timestepBuffer = try #require(context.device.makeBuffer(
+            bytes: &timestep, length: 4, options: .storageModeShared
+        ))
+        let conditioningBuffer = try #require(context.device.makeBuffer(
+            bytes: &conditioning, length: conditioning.count * 4, options: .storageModeShared
+        ))
+        let coordinateBuffer = try #require(context.device.makeBuffer(
+            bytes: &coordinates, length: coordinates.count * 4, options: .storageModeShared
+        ))
+        var blockOutputs: [MTLBuffer] = []
+        let output = try SLatFlow(
+            context: context, configuration: .texture
+        ).forwardF32(
+            input: inputBuffer, timestep: timestepBuffer,
+            conditioning: conditioningBuffer, coordinates: coordinateBuffer,
+            checkpoint: checkpoint, tokens: tokens, conditioningTokens: 2,
+            trace: { _, buffer in blockOutputs.append(buffer) }
+        )
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "slat-texture-flow-tiny", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: fixtureURL) ==
+                "93ecb91b95fa1c80eccf2783c034419219495e895ac0223f75776bb4ed7e7661"
+        )
+        let golden = try Data(contentsOf: fixtureURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        try #require(golden.count == tokens * 32)
+        let actual = output.contents().assumingMemoryBound(to: Float.self)
+        var maximumAbsoluteError: Float = 0
+        var squaredError: Double = 0
+        for index in golden.indices {
+            try #require(actual[index].isFinite)
+            let error = abs(actual[index] - golden[index])
+            maximumAbsoluteError = max(maximumAbsoluteError, error)
+            squaredError += Double(error * error)
+        }
+        let rmsError = sqrt(squaredError / Double(golden.count))
+
+        let traceURL = try #require(Bundle.module.url(
+            forResource: "slat-texture-flow-tiny", withExtension: "f32.trace",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: traceURL) ==
+                "243bf35b8fc49a3a393a4dd6f311a654f54782f6610f9623a0375dd8a9a70ead"
+        )
+        let trace = try Data(contentsOf: traceURL).withUnsafeBytes {
+            Array($0.bindMemory(to: UInt16.self))
+        }
+        let elementsPerBlock = tokens * 1536
+        try #require(blockOutputs.count == SLatFlow.blockCount)
+        try #require(trace.count == blockOutputs.count * elementsPerBlock)
+        var worstBlockMaximum: Float = 0
+        var worstBlockRMS: Double = 0
+        var worstBlockNormalizedRMS: Double = 0
+        var worstBlockMaximumScaleRatio: Float = 0
+        for blockIndex in blockOutputs.indices {
+            let values = blockOutputs[blockIndex].contents().assumingMemoryBound(to: Float.self)
+            var blockSquaredError: Double = 0
+            var expectedSquaredMagnitude: Double = 0
+            var blockMaximum: Float = 0
+            var expectedMaximum: Float = 0
+            for index in 0..<elementsPerBlock {
+                try #require(values[index].isFinite)
+                let expected = fromBF16(UInt16(
+                    littleEndian: trace[blockIndex * elementsPerBlock + index]
+                ))
+                let error = abs(values[index] - expected)
+                blockMaximum = max(blockMaximum, error)
+                expectedMaximum = max(expectedMaximum, abs(expected))
+                blockSquaredError += Double(error * error)
+                expectedSquaredMagnitude += Double(expected * expected)
+            }
+            try #require(expectedMaximum > 0)
+            let blockRMS = sqrt(blockSquaredError / Double(elementsPerBlock))
+            let expectedRMS = sqrt(expectedSquaredMagnitude / Double(elementsPerBlock))
+            worstBlockMaximum = max(worstBlockMaximum, blockMaximum)
+            worstBlockRMS = max(worstBlockRMS, blockRMS)
+            worstBlockNormalizedRMS = max(
+                worstBlockNormalizedRMS, blockRMS / max(expectedRMS, 1e-12)
+            )
+            worstBlockMaximumScaleRatio = max(
+                worstBlockMaximumScaleRatio, blockMaximum / expectedMaximum
+            )
+        }
+        print(
+            "30-block texture flow: max=\(maximumAbsoluteError) rms=\(rmsError) " +
+            "block_max=\(worstBlockMaximum) block_rms=\(worstBlockRMS) " +
+            "block_normalized_rms=\(worstBlockNormalizedRMS) " +
+            "block_max_scale_ratio=\(worstBlockMaximumScaleRatio)"
+        )
+        #expect(maximumAbsoluteError <= 0.025)
+        #expect(rmsError <= 0.01)
+        #expect(worstBlockMaximum <= 64)
+        #expect(worstBlockRMS <= 1)
+        #expect(worstBlockNormalizedRMS <= 0.02)
+        #expect(worstBlockMaximumScaleRatio <= 0.04)
     }
 
     @Test(

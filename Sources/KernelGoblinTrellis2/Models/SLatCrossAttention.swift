@@ -126,11 +126,7 @@ public final class SLatCrossAttention: @unchecked Sendable {
     }
 
     private func makeBuffer(length: Int, label: String) throws -> MTLBuffer {
-        guard let buffer = context.device.makeBuffer(length: length, options: .storageModeShared) else {
-            throw NativeRuntimeError.allocationFailed("could not allocate \(label)")
-        }
-        buffer.label = label
-        return buffer
+        try context.makeBuffer(length: length, label: label)
     }
 }
 

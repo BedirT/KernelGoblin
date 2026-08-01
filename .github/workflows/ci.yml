@@ -8,8 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  trellis2-z-order-metal-build:
-    runs-on: macos-14
+  trellis2-native-build:
+    runs-on: macos-26
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -17,6 +17,8 @@ jobs:
         run: brew install ninja
       - name: Validate harness
         run: ./kg validate
+      - name: Audit no-Torch native TRELLIS runtime
+        run: ./kg model native-audit trellis2
       # GitHub-hosted macOS VMs do not constitute physical-GPU verification.
       # Real Metal conformance remains an explicit local/self-hosted `kg test`.
       - name: Compile Metal kernel and host harness

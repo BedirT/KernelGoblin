@@ -1,18 +1,33 @@
 import Metal
 
-public final class SLatShapeFlow: @unchecked Sendable {
-    public static let inputChannels = 32
+public enum SLatFlowConfiguration: Sendable {
+    case shape
+    case texture
+
+    public var inputChannels: Int {
+        switch self {
+        case .shape: 32
+        case .texture: 64
+        }
+    }
+}
+
+public final class SLatFlow: @unchecked Sendable {
     public static let modelChannels = 1536
     public static let outputChannels = 32
     public static let blockCount = 30
 
+    public let configuration: SLatFlowConfiguration
     private let context: MetalContext
     private let dense: DenseKernel
     private let primitives: PrimitiveKernel
     private let normalization: NormalizationKernel
     private let block: SLatBlock
 
-    public init(context: MetalContext) throws {
+    public init(
+        context: MetalContext, configuration: SLatFlowConfiguration = .shape
+    ) throws {
+        self.configuration = configuration
         self.context = context
         self.dense = try DenseKernel(context: context)
         self.primitives = try PrimitiveKernel(context: context)
@@ -37,7 +52,7 @@ public final class SLatShapeFlow: @unchecked Sendable {
         coordinates: MTLBuffer, checkpoint: MappedCheckpoint, tokens: Int,
         conditioningTokens: Int, trace: ((Int, MTLBuffer) -> Void)?
     ) throws -> MTLBuffer {
-        let inputBytes = try shapeFlowBytes(tokens, Self.inputChannels)
+        let inputBytes = try shapeFlowBytes(tokens, configuration.inputChannels)
         let hiddenBytes = try shapeFlowBytes(tokens, Self.modelChannels)
         let conditioningBytes = try shapeFlowBytes(conditioningTokens, 1024)
         let coordinateBytes = try shapeFlowBytes(
@@ -50,14 +65,15 @@ public final class SLatShapeFlow: @unchecked Sendable {
         }
 
         let inputWeight = try requireTensor(
-            checkpoint, "input_layer.weight", .bf16, [1536, 32]
+            checkpoint, "input_layer.weight", .bf16,
+            [1536, UInt64(configuration.inputChannels)]
         )
         let inputBias = try requireTensor(checkpoint, "input_layer.bias", .bf16, [1536])
         var hidden = try makeBuffer(length: hiddenBytes, label: "shape-flow input projection")
         try dense.linearBF16WeightsF32Output(
             input: input, checkpoint: checkpoint.buffer,
             weightOffset: Int(inputWeight.fileOffset), biasOffset: Int(inputBias.fileOffset),
-            rows: tokens, inputChannels: Self.inputChannels,
+            rows: tokens, inputChannels: configuration.inputChannels,
             outputChannels: Self.modelChannels, output: hidden
         )
         try primitives.roundBF16F32(input: hidden, count: hiddenBytes / 4, output: hidden)
@@ -163,13 +179,11 @@ public final class SLatShapeFlow: @unchecked Sendable {
     }
 
     private func makeBuffer(length: Int, label: String) throws -> MTLBuffer {
-        guard let buffer = context.device.makeBuffer(length: length, options: .storageModeShared) else {
-            throw NativeRuntimeError.allocationFailed("could not allocate \(label)")
-        }
-        buffer.label = label
-        return buffer
+        try context.makeBuffer(length: length, label: label)
     }
 }
+
+public typealias SLatShapeFlow = SLatFlow
 
 private func shapeFlowBytes(
     _ rows: Int, _ channels: Int,

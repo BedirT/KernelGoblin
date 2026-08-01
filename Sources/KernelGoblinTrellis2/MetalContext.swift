@@ -4,8 +4,9 @@ import Metal
 public final class MetalContext: @unchecked Sendable {
     public let device: MTLDevice
     public let queue: MTLCommandQueue
+    public let arena: MetalBufferArena?
 
-    public init() throws {
+    public init(arenaCapacity: Int? = nil) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw NativeRuntimeError.allocationFailed("no Metal device is available")
         }
@@ -14,6 +15,9 @@ public final class MetalContext: @unchecked Sendable {
         }
         self.device = device
         self.queue = queue
+        self.arena = try arenaCapacity.map {
+            try MetalBufferArena(device: device, capacity: $0, label: "KernelGoblin arena")
+        }
     }
 
     public func library(named name: String) throws -> MTLLibrary {
@@ -24,5 +28,16 @@ public final class MetalContext: @unchecked Sendable {
         let options = MTLCompileOptions()
         options.languageVersion = .version3_0
         return try device.makeLibrary(source: source, options: options)
+    }
+
+    public func makeBuffer(length: Int, label: String) throws -> MTLBuffer {
+        if let arena {
+            return try arena.makeBuffer(length: length, label: label)
+        }
+        guard let buffer = device.makeBuffer(length: length, options: .storageModeShared) else {
+            throw NativeRuntimeError.allocationFailed("could not allocate \(label)")
+        }
+        buffer.label = label
+        return buffer
     }
 }

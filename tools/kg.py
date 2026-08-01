@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import re
@@ -15,6 +16,27 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TRELLIS_NATIVE_ROOTS = {
+    "Sources/KernelGoblinTrellis2",
+    "Sources/KernelGoblinTrellis2CLI",
+}
+TRELLIS_NATIVE_EXTENSIONS = {".metal", ".swift"}
+TRELLIS_NATIVE_TARGETS = {
+    "KernelGoblinTrellis2",
+    "KernelGoblinTrellis2CLI",
+}
+TRELLIS_NATIVE_IMPORTS = {
+    "CoreFoundation",
+    "CryptoKit",
+    "Darwin",
+    "Foundation",
+    "KernelGoblinTrellis2",
+    "Metal",
+}
+TRELLIS_FORBIDDEN_RUNTIME_APIS = (
+    re.compile(r"\bProcess\s*[.(]"),
+    re.compile(r"\b(?:posix_spawn|system|dlopen|dlsym)\s*\("),
+)
 
 
 def manifests() -> dict[str, dict]:
@@ -39,6 +61,74 @@ def kernel(value: str) -> dict:
 def run(command: list[str], *, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(command), flush=True)
     subprocess.run(command, cwd=ROOT, check=True, env=env)
+
+
+def native_source_errors() -> list[str]:
+    errors: list[str] = []
+    for source_root in sorted(TRELLIS_NATIVE_ROOTS):
+        root = ROOT / source_root
+        if not root.is_dir():
+            errors.append(f"native source root does not exist: {source_root}")
+            continue
+        for source in sorted(item for item in root.rglob("*") if item.is_file()):
+            relative = source.relative_to(ROOT)
+            if source.suffix not in TRELLIS_NATIVE_EXTENSIONS:
+                errors.append(f"native source has forbidden extension: {relative}")
+                continue
+            if source.suffix != ".swift":
+                continue
+            text = source.read_text()
+            for module in re.findall(r"(?m)^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)", text):
+                if module not in TRELLIS_NATIVE_IMPORTS:
+                    errors.append(f"native source imports undeclared module {module}: {relative}")
+            for pattern in TRELLIS_FORBIDDEN_RUNTIME_APIS:
+                if pattern.search(text):
+                    errors.append(f"native source uses forbidden runtime-loading API: {relative}")
+                    break
+    return errors
+
+
+def native_package_errors(description: dict) -> list[str]:
+    errors: list[str] = []
+    targets = {target["name"]: target for target in description.get("targets", [])}
+    products = {
+        product["name"]: product for product in description.get("products", [])
+    }
+    executable = products.get("kg-trellis2")
+    if executable is None:
+        return ["Swift package does not declare the kg-trellis2 product"]
+
+    pending = list(executable.get("targets", []))
+    closure: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in closure:
+            continue
+        target = targets.get(name)
+        if target is None:
+            errors.append(f"kg-trellis2 depends on unresolved local target {name}")
+            continue
+        closure.add(name)
+        pending.extend(target.get("target_dependencies", []))
+
+    if closure != TRELLIS_NATIVE_TARGETS:
+        errors.append(
+            "kg-trellis2 local target closure must be exactly "
+            + ", ".join(sorted(TRELLIS_NATIVE_TARGETS))
+        )
+    for name in sorted(closure):
+        target = targets.get(name)
+        if target is None:
+            continue
+        if target.get("module_type") != "SwiftTarget":
+            errors.append(f"native target {name} is not a Swift target")
+        path = target.get("path")
+        if path not in TRELLIS_NATIVE_ROOTS:
+            errors.append(f"native target {name} has forbidden source root {path!r}")
+        for source in target.get("sources", []):
+            if Path(source).suffix != ".swift":
+                errors.append(f"native target {name} has non-Swift source {source}")
+    return errors
 
 
 def require_backend(manifest: dict) -> None:
@@ -130,6 +220,27 @@ def command_validate(_: argparse.Namespace) -> None:
             if revision and not full_sha.match(revision):
                 errors.append(f"{path}: revision {revision!r} must be a full lowercase Git SHA")
 
+        if model.get("production_runtime") == "swift-metal":
+            native = model.get("native", {})
+            for field in (
+                "package", "executable", "source_roots",
+                "allowed_source_extensions", "forbidden_imports",
+                "external_package_dependencies", "torch_policy",
+            ):
+                if field not in native:
+                    errors.append(f"{path}: missing native.{field}")
+            if native.get("torch_policy") != "oracle-only":
+                errors.append(f"{path}: native.torch_policy must be 'oracle-only'")
+            if set(native.get("source_roots", [])) != TRELLIS_NATIVE_ROOTS:
+                errors.append(f"{path}: native.source_roots must match the enforced roots")
+            if set(native.get("allowed_source_extensions", [])) != TRELLIS_NATIVE_EXTENSIONS:
+                errors.append(
+                    f"{path}: native.allowed_source_extensions must be exactly .swift and .metal"
+                )
+            if native.get("external_package_dependencies") != []:
+                errors.append(f"{path}: native external package dependencies must remain empty")
+            errors.extend(f"{path}: {error}" for error in native_source_errors())
+
     agent_dir = ROOT / ".codex" / "agents"
     for path in sorted(agent_dir.glob("*.toml")):
         with path.open("rb") as stream:
@@ -189,7 +300,7 @@ def command_model_native_setup(args: argparse.Namespace) -> None:
 def command_model_native_test(args: argparse.Namespace) -> None:
     if args.model != "trellis2":
         raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
-    checkpoint = Path(args.checkpoint).expanduser() if args.checkpoint else (
+    checkpoint = Path(args.checkpoint).expanduser().resolve() if args.checkpoint else (
         Path.home() / ".cache" / "huggingface" / "hub"
         / "models--microsoft--TRELLIS.2-4B" / "snapshots"
         / "af44b45f2e35a493886929c6d786e563ec68364d" / "ckpts"
@@ -200,9 +311,91 @@ def command_model_native_test(args: argparse.Namespace) -> None:
             "native TRELLIS.2 conformance requires the pinned shape-flow checkpoint; "
             "pass --checkpoint FILE.safetensors"
         )
+    texture_checkpoint = (
+        Path(args.texture_checkpoint).expanduser().resolve() if args.texture_checkpoint else (
+            checkpoint.parent
+            / "slat_flow_imgshape2tex_dit_1_3B_512_bf16.safetensors"
+        )
+    )
+    if not texture_checkpoint.is_file():
+        raise SystemExit(
+            "native TRELLIS.2 conformance requires the pinned texture-flow checkpoint; "
+            "pass --texture-checkpoint FILE.safetensors"
+        )
     environment = os.environ.copy()
     environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"] = str(checkpoint)
+    environment["KG_TRELLIS2_TEXTURE_FLOW_CHECKPOINT"] = str(texture_checkpoint)
     run(["swift", "test", "--parallel"], env=environment)
+
+
+def command_model_native_audit(args: argparse.Namespace) -> None:
+    if args.model != "trellis2":
+        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    if platform.system() != "Darwin":
+        raise SystemExit("native TRELLIS.2 binary audit requires macOS")
+
+    source_errors = native_source_errors()
+    if source_errors:
+        raise SystemExit("\n".join(f"ERROR: {error}" for error in source_errors))
+
+    run(["swift", "build", "-c", "release", "--product", "kg-trellis2"])
+    dependency_result = subprocess.run(
+        ["swift", "package", "show-dependencies", "--format", "json"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    dependency_graph = json.loads(dependency_result.stdout)
+    dependencies = dependency_graph.get("dependencies", [])
+    if dependencies:
+        names = ", ".join(item.get("name", "unknown") for item in dependencies)
+        raise SystemExit(f"native Swift package has external dependencies: {names}")
+
+    description_result = subprocess.run(
+        ["swift", "package", "describe", "--type", "json"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    package_errors = native_package_errors(json.loads(description_result.stdout))
+    if package_errors:
+        raise SystemExit("\n".join(f"ERROR: {error}" for error in package_errors))
+
+    bin_result = subprocess.run(
+        ["swift", "build", "-c", "release", "--show-bin-path"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    executable = Path(bin_result.stdout.strip()) / "kg-trellis2"
+    linkage = subprocess.run(
+        ["otool", "-L", str(executable)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    forbidden = re.compile(r"(?i)(python|torch|libc10|mlx)")
+    linked_libraries = [
+        line.strip().split(" (", 1)[0]
+        for line in linkage.splitlines()[1:]
+        if line.strip()
+    ]
+    bad_libraries = [
+        library for library in linked_libraries
+        if forbidden.search(library)
+        or not library.startswith(("/System/Library/", "/usr/lib/"))
+    ]
+    if bad_libraries:
+        raise SystemExit("native binary has forbidden linkage: " + ", ".join(bad_libraries))
+
+    print(
+        "PASS: kg-trellis2 is Swift + Metal, has zero external Swift packages, "
+        f"and links {len(linked_libraries)} Apple/Swift system libraries"
+    )
 
 
 def command_model_test(args: argparse.Namespace) -> None:
@@ -275,11 +468,13 @@ def parser() -> argparse.ArgumentParser:
         ("test", "run reference compatibility and primitive tests", command_model_test),
         ("native-setup", "build the no-Torch Swift/Metal runtime", command_model_native_setup),
         ("native-test", "run native Swift/Metal conformance tests", command_model_native_test),
+        ("native-audit", "audit the release binary for a Swift/Metal-only runtime", command_model_native_audit),
     ):
         sub = model_commands.add_parser(name, help=help_text)
         sub.add_argument("model")
         if name == "native-test":
             sub.add_argument("--checkpoint")
+            sub.add_argument("--texture-checkpoint")
         sub.set_defaults(func=function)
     model_run = model_commands.add_parser("run", help="run real model inference")
     model_run.add_argument("model")

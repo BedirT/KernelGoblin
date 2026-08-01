@@ -66,6 +66,10 @@ normally be bit-exact.
 
 - Preserve the original algorithm until conformance passes; tune in a separate
   change so correctness and performance regressions are attributable.
+- Keep the TRELLIS.2 production runtime in `Sources/KernelGoblinTrellis2*`
+  Swift + Metal only. Python, PyTorch, LibTorch, and MPS framework code belong
+  under `ports/trellis2/` as optional reference/oracle tooling and must never be
+  imported or launched by a native setup, test, or run command.
 - Use native backend toolchains and check every host API or launch error.
 - Separate backend-independent interfaces from Metal, CUDA, and CPU sources.
 - Reuse the root CMake/CTest and `kg` patterns. Add dependencies only to the

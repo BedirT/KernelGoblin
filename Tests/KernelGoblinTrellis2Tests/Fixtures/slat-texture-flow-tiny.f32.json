@@ -1,0 +1,39 @@
+{
+  "format": "KernelGoblin TRELLIS.2 30-block texture SLat flow F32 oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "weight_revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+  "weight_sha256": "8371aa1c5d13be79dcd5ddfd2cf3835e902e204dc34427169a1c702828e1a94d",
+  "batch_count": 1,
+  "tokens": 2,
+  "context_tokens": 2,
+  "input_channels": 64,
+  "model_channels": 1536,
+  "output_channels": 32,
+  "blocks": 30,
+  "use_rope": true,
+  "timestep": 650.25,
+  "input_layout": "[32-channel noise, 32-channel normalized shape]",
+  "noise_formula": "f32(sin(i * 0.021) * 0.30)",
+  "normalized_shape_formula": "f32(cos(i * 0.017) * 0.20)",
+  "context_formula": "f32(sin(i * 0.015) * 0.25)",
+  "coordinates": [
+    [
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      2,
+      3
+    ]
+  ],
+  "output_sha256": "93ecb91b95fa1c80eccf2783c034419219495e895ac0223f75776bb4ed7e7661",
+  "trace_file": "slat-texture-flow-tiny.f32.trace",
+  "trace_dtype": "BF16",
+  "trace_elements_per_block": 3072,
+  "trace_sha256": "243bf35b8fc49a3a393a4dd6f311a654f54782f6610f9623a0375dd8a9a70ead",
+  "oracle": "pinned Torch CPU SLatFlowModel"
+}

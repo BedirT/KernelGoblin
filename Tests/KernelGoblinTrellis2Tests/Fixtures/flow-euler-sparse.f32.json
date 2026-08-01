@@ -1,0 +1,152 @@
+{
+  "format": "KernelGoblin TRELLIS.2 sparse Flow Euler F32 oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "sampler": {
+    "sigma_minimum": 1e-05,
+    "steps": 12,
+    "time_rescale": 3.0,
+    "guidance_strength": 7.5,
+    "guidance_rescale": 0.5,
+    "guidance_interval": [
+      0.6,
+      1.0
+    ]
+  },
+  "schedule_f64": [
+    1.0,
+    0.9705882352941178,
+    0.9374999999999999,
+    0.9,
+    0.8571428571428571,
+    0.8076923076923076,
+    0.75,
+    0.6818181818181819,
+    0.6,
+    0.5,
+    0.3750000000000001,
+    0.21428571428571436,
+    0.0
+  ],
+  "layout_offsets": [
+    0,
+    2,
+    5
+  ],
+  "channels": 4,
+  "noise_f32": [
+    -0.33000001311302185,
+    -0.21699999272823334,
+    -0.10400000214576721,
+    0.008999999612569809,
+    0.12200000137090683,
+    0.23499999940395355,
+    0.3479999899864197,
+    -0.3089999854564667,
+    -0.19599999487400055,
+    -0.08299999684095383,
+    0.029999999329447746,
+    0.14300000667572021,
+    0.25600001215934753,
+    0.36899998784065247,
+    -0.2879999876022339,
+    -0.17499999701976776,
+    -0.06199999898672104,
+    0.050999999046325684,
+    0.164000004529953,
+    0.2770000100135803
+  ],
+  "velocity_formula": "state*0.125 + model_timestep*0.0001 + i*0.002 + pass_bias",
+  "positive_bias": 0.075,
+  "negative_bias": -0.125,
+  "call_trace": [
+    {
+      "pass": "positive",
+      "model_timestep": 1000.0
+    },
+    {
+      "pass": "negative",
+      "model_timestep": 1000.0
+    },
+    {
+      "pass": "positive",
+      "model_timestep": 970.5882568359375
+    },
+    {
+      "pass": "negative",
+      "model_timestep": 970.5882568359375
+    },
+    {
+      "pass": "positive",
+      "model_timestep": 937.5
+    },
+    {
+      "pass": "negative",
+      "model_timestep": 937.5
+    },
+    {
+      "pass": "positive",
+      "model_timestep": 900.0
+    },
+    {
+      "pass": "negative",
+      "model_timestep": 900.0
+    },
+    {
+      "pass": "positive",
+      "model_timestep": 857.1428833007812
+    },
+    {
+      "pass": "negative",
+      "model_timestep": 857.1428833007812
+    },
+    {
+      "pass": "positive",
+      "model_timestep": 807.6923217773438
+    },
+    {
+      "pass": "negative",
+      "model_timestep": 807.6923217773438
+    },
+    {
+      "pass": "positive",
+      "model_timestep": 750.0
+    },
+    {
+      "pass": "negative",
+      "model_timestep": 750.0
+    },
+    {
+      "pass": "positive",
+      "model_timestep": 681.8181762695312
+    },
+    {
+      "pass": "negative",
+      "model_timestep": 681.8181762695312
+    },
+    {
+      "pass": "positive",
+      "model_timestep": 600.0
+    },
+    {
+      "pass": "negative",
+      "model_timestep": 600.0
+    },
+    {
+      "pass": "positive",
+      "model_timestep": 500.0
+    },
+    {
+      "pass": "positive",
+      "model_timestep": 375.0
+    },
+    {
+      "pass": "positive",
+      "model_timestep": 214.2857208251953
+    }
+  ],
+  "final_sha256": "4a104bffebb6e6164732f12d8f186dbd9fbd5b99889623c6f842703c7c9b3c47",
+  "trace_file": "flow-euler-sparse.f32.trace",
+  "trace_layout": "12 xprev tensors followed by 12 x0 tensors",
+  "trace_sha256": "c39475758c9f4bdebe1de863d4a5a5346f5724f7c81e09e3d7adbe5a53eef00d",
+  "oracle": "pinned Torch CPU FlowEulerGuidanceIntervalSampler with SparseTensor"
+}

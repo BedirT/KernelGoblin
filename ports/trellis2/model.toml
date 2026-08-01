@@ -26,11 +26,116 @@ revision = "ea8dc2863c51be0a264bab82070e3e8836b02d51"
 license = "DINOv3 License"
 gated = true
 
+[[components]]
+role = "dino_image_encoder"
+repository = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+revision = "ea8dc2863c51be0a264bab82070e3e8836b02d51"
+path = "model.safetensors"
+bytes = 1212559808
+sha256 = "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179"
+dtype = "F32"
+gated = true
+
+[[components]]
+role = "sparse_structure_flow_512"
+repository = "microsoft/TRELLIS.2-4B"
+revision = "af44b45f2e35a493886929c6d786e563ec68364d"
+path = "ckpts/ss_flow_img_dit_1_3B_64_bf16.safetensors"
+bytes = 2584426920
+sha256 = "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6"
+dtype = "BF16"
+
+[[components]]
+role = "sparse_structure_decoder_512"
+repository = "microsoft/TRELLIS-image-large"
+revision = "25e0d31ffbebe4b5a97464dd851910efc3002d96"
+path = "ckpts/ss_dec_conv3d_16l8_fp16.safetensors"
+bytes = 147591972
+sha256 = "1c76d4a40519aa2d711cc263a8404105231ac26db31d946bed48b84fee79009a"
+dtype = "F16"
+
+[[components]]
+role = "shape_slat_flow_512"
+repository = "microsoft/TRELLIS.2-4B"
+revision = "af44b45f2e35a493886929c6d786e563ec68364d"
+path = "ckpts/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors"
+bytes = 2584574424
+sha256 = "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f"
+dtype = "BF16"
+
+[[components]]
+role = "texture_slat_flow_512"
+repository = "microsoft/TRELLIS.2-4B"
+revision = "af44b45f2e35a493886929c6d786e563ec68364d"
+path = "ckpts/slat_flow_imgshape2tex_dit_1_3B_512_bf16.safetensors"
+bytes = 2584672728
+sha256 = "8371aa1c5d13be79dcd5ddfd2cf3835e902e204dc34427169a1c702828e1a94d"
+dtype = "BF16"
+
+[[components]]
+role = "shape_decoder_512"
+repository = "microsoft/TRELLIS.2-4B"
+revision = "af44b45f2e35a493886929c6d786e563ec68364d"
+path = "ckpts/shape_dec_next_dc_f16c32_fp16.safetensors"
+bytes = 948490494
+sha256 = "e3b718d3e43e4f8780e9a24ac6fff231811a67e3b058e336e10fe654c911d581"
+dtype = "F16"
+
+[[components]]
+role = "texture_decoder_512"
+repository = "microsoft/TRELLIS.2-4B"
+revision = "af44b45f2e35a493886929c6d786e563ec68364d"
+path = "ckpts/tex_dec_next_dc_f16c32_fp16.safetensors"
+bytes = 948458812
+sha256 = "97ea69addea2ecd9312910f5f548234665eef51c088386180b7cd5b258645e3c"
+dtype = "F16"
+
+[[components]]
+role = "existing_mesh_shape_encoder_512"
+repository = "microsoft/TRELLIS.2-4B"
+revision = "af44b45f2e35a493886929c6d786e563ec68364d"
+path = "ckpts/shape_enc_next_dc_f16c32_fp16.safetensors"
+bytes = 708797208
+sha256 = "f37c5ff5b983b68e9946060000f09bc131f3e84318a2c8b7430a81e4b4636c41"
+dtype = "F16"
+
+[samplers.sparse_structure_512]
+kind = "flow_euler_guidance_interval"
+steps = 12
+sigma_minimum = 0.00001
+time_rescale = 5.0
+guidance_strength = 7.5
+guidance_rescale = 0.7
+guidance_interval = [0.6, 1.0]
+
+[samplers.shape_slat_512]
+kind = "flow_euler_guidance_interval"
+steps = 12
+sigma_minimum = 0.00001
+time_rescale = 3.0
+guidance_strength = 7.5
+guidance_rescale = 0.5
+guidance_interval = [0.6, 1.0]
+
+[samplers.texture_slat_512]
+kind = "flow_euler"
+steps = 12
+sigma_minimum = 0.00001
+time_rescale = 3.0
+guidance_strength = 1.0
+guidance_rescale = 0.0
+guidance_interval = [0.6, 0.9]
+
 [native]
 package = "KernelGoblinTrellis2"
 executable = "kg-trellis2"
 minimum_macos = 14
 weight_lifecycle = "whole-stage mapped load, synchronized release"
+source_roots = ["Sources/KernelGoblinTrellis2", "Sources/KernelGoblinTrellis2CLI"]
+allowed_source_extensions = [".swift", ".metal"]
+forbidden_imports = ["PythonKit", "Torch", "LibTorch", "MetalPerformanceShaders", "MetalPerformanceShadersGraph"]
+external_package_dependencies = []
+torch_policy = "oracle-only"
 
 [verification]
 physical_backend = "Metal"

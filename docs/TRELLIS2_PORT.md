@@ -12,9 +12,10 @@ Apple M3 Pro through a Torch/MPS reference runtime. The 1024 result fit in
 
 The production Apple port is **Swift + Metal with no Torch dependency**. It
 already validates and memory-maps real safetensors files, owns bounded Metal
-scratch, executes real DINOv3 and TRELLIS dense layers, and includes native
-Morton and UV-raster kernels. Full native model inference, upstream-faithful
-PBR export, and existing-mesh texturing remain in progress.
+scratch, executes both complete TRELLIS SLat flows through native samplers, and
+includes native Morton and UV-raster kernels. Full native DINO, sparse
+structure, decoding, upstream-faithful PBR export, and existing-mesh texturing
+remain in progress.
 
 That split is deliberate. A finished reference graph tells us what native code
 must match. A native kernel test tells us one operation is correct. Neither is
@@ -35,6 +36,10 @@ pipeline uses it to turn the input image into conditioning tokens. Native code
 does not remove that access requirement and KernelGoblin never redistributes
 the checkpoint.
 
+Exact repository paths, byte counts, SHA-256 values, dtypes, roles, and sampler
+settings for all eight 512 components are machine-readable in
+[`ports/trellis2/model.toml`](../ports/trellis2/model.toml).
+
 ## Evidence At A Glance
 
 | Surface | Current status | Acceptance boundary |
@@ -47,11 +52,14 @@ the checkpoint.
 | TRELLIS timestep + shared adaLN | Verified native slice | Real Metal sinusoid, SiLU MLP, 9,216-channel modulation, zero BF16 bit mismatches |
 | TRELLIS block 0 | Verified native slice | Two-token 3D RoPE, normalization, fused self/cross attention, 8,192-channel MLP, adaLN, and residual graph; `0.01747` RMS against pinned Torch BF16 fixture |
 | TRELLIS shape flow | Verified native stage | Complete real input/timestep/adaLN/30-block/output graph; two-token F32 output has `0.00615` RMS error against pinned Torch |
+| TRELLIS texture flow | Verified native stage | Separate real 64-channel input/30-block/output graph; two-token F32 output has `0.00733` RMS error against pinned Torch |
+| Native Flow Euler | Verified native orchestration | Exact schedule, interval CFG/rescale, shape/texture normalization, and repeated real-checkpoint flow calls |
+| Metal memory arena | Verified native foundation | Hard heap capacity, overflow rejection, and current/peak/cumulative allocation evidence across both sampler integrations |
 | Morton coding | Verified native Metal | Bit-exact differential and randomized round trips |
 | UV raster | Verified analytic Metal slice | Physical render, analytic coverage/interpolation; nvdiffrast CUDA goldens pending |
 | PBR bake | Experimental reference | Synthetic component tests and GLB reload; upstream mesh semantics pending |
 | Existing-mesh texturing | In progress | Staged reference orchestration exists; complete artifact proof pending |
-| Full Swift + Metal model | In progress | Conditioning, 3D RoPE, fused attention, and the complete shape-flow stage pass; other model stages remain |
+| Full Swift + Metal model | In progress | Both complete SLat flows and samplers pass; full DINO, sparse structure, decoders, mesh extraction, and PBR assembly remain |
 
 ## What The Reference Run Does
 
@@ -102,8 +110,10 @@ flowchart LR
 ```
 
 The native runtime goes further by mapping the verified checkpoint into a
-no-copy `MTLBuffer`, using hard-bounded reusable scratch, and making stage
-release an explicit ownership event. It borrows this discipline from
+no-copy `MTLBuffer` and routing flow/sampler temporaries through a heap-backed
+Metal arena. The arena refuses overflow and reports current, peak, and
+cumulative requested bytes separately. A synchronized full-stage release
+contract remains an acceptance gate. This work borrows its discipline from
 [`drumih/turbo-fieldfare`](https://github.com/drumih/turbo-fieldfare/tree/1859181ae26eb39c9698437f806be62adc01367c),
 but not its expert cache: TRELLIS stages are dense and reuse every block at
 every denoising step, so per-layer SSD streaming would reread almost the whole
@@ -171,10 +181,12 @@ values. It is not presented as an upstream CUDA PBR render.
 
 ## PBR And Existing-Mesh Texturing
 
-We are not stopping at vertex colors. The repository now has a Metal UV raster,
-xatlas unwrap, sparse half-voxel sampling, inpainting, glTF base-color and
+We are not stopping at vertex colors. The **reference port** now has xatlas
+unwrap, sparse half-voxel sampling, inpainting, glTF base-color and
 metallic-roughness packing, closest-surface projection, and a staged
-existing-mesh texturing command.
+existing-mesh texturing command. Separately, KernelGoblin has a verified Metal
+UV-raster kernel. These pieces are not yet assembled into the shipping Swift
+package, so they are not presented as a native PBR pipeline.
 
 The missing word is **parity**. Upstream performs CuMesh cleanup, repeated
 simplification, component and orientation handling, its own unwrap semantics,
@@ -186,9 +198,11 @@ against pinned upstream outputs.
 
 ## Next Acceptance Gates
 
-1. Add segmented sparse attention and representative-token memory gates.
+1. Replace correctness-first quadratic attention with tiled Metal attention,
+   then run captured representative-token memory and timing gates.
 2. Implement sparse tensor topology, convolution, S2C/C2S, and decoder caches.
-3. Complete native DINO, sampler, VAE stages, and six-channel PBR decoding.
+3. Complete native DINO, sparse-structure flow/decoder, VAE stages, and
+   six-channel PBR decoding.
 4. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.
 5. Run existing-mesh texturing end to end with preserved and regenerated UVs.
 6. Profile only after parity, then optimize the measured bottlenecks.

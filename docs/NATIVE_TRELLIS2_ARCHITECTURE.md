@@ -13,6 +13,16 @@ repository's broader mission. Geometry may use small pinned native libraries
 such as xatlas and Eigen through Swift C++ interoperability where replacing a
 mature algorithm would add risk without improving the runtime contract.
 
+`ports/trellis2/model.toml` makes the boundary machine-readable. It declares
+the native source roots, their allowed Swift/Metal file types, forbidden
+Python/Torch bridge imports, and the current empty external Swift-package
+dependency set. `./kg validate` enforces fixed source and import allowlists;
+`./kg model native-audit trellis2` additionally builds the release executable,
+requires an empty resolved SwiftPM dependency graph, and audits its Mach-O
+linkage. If a small native geometry dependency is eventually accepted, it must
+be pinned, attributed, declared there, and must not pull Python or Torch into
+installation or runtime.
+
 ## Why Native
 
 PyTorch proved that the TRELLIS.2 graph and open checkpoints can execute on
@@ -152,6 +162,35 @@ final maximum error is `0.01557` and RMS error is `0.00615` over 64 F32 values.
 The tiny fixture covers every stage weight and operation, but it does not stand
 in for representative sparse-token memory or performance evidence.
 
-The current block contract is batch one. Before native stage execution accepts
-multiple sparse samples in one call, the tensor layout must carry explicit
-segment offsets and fused attention must enforce those boundaries.
+The fifth slice reuses that graph for the separate production texture-flow
+checkpoint and its 64-channel noise-plus-normalized-shape input. Both flows now
+run repeatedly through native Swift Euler orchestration. Two-step immutable
+fixtures capture every model prediction and sampler state. The texture
+trajectory stays within `0.00621` normalized final RMS; the shape fixture also
+reports the larger deterministic CFG trajectory drift instead of hiding it
+behind the single-stage tolerance.
+
+Flow and sampler temporaries can now be allocated from a heap-backed Metal
+arena. The arena enforces a hard capacity, rejects oversized requests, and
+reports current heap use, peak heap use, cumulative allocation traffic, and
+the current device-allocation gauge separately. Tiny sampler integrations peak
+below 352 KB, which validates bounded allocation and reuse only. It is not a
+representative 512 memory claim, and synchronized checkpoint-plus-heap stage
+release remains to be proven.
+
+The attention primitive now carries explicit segment offsets and rejects
+cross-sample attention as well as unsafe output/key/value aliases. The complete
+block contract remains batch one until timestep modulation also carries a
+per-token batch map. The correctness-first attention algorithm is still
+quadratic in work; a tiled implementation and a captured production coordinate
+set are required before representative speed and memory gates can pass.
+
+We evaluated MLX Steel, ccv MFA, llama.cpp, vllm-metal, and Philip Turner's
+Swift `metal-flash-attention` at pinned revisions. We did not add any as a
+runtime dependency. The Swift package is elegant but exposes a single-head,
+non-varlen contract, lacks BF16 Q/K/V, and its private async-copy assembly does
+not compile with the current Xcode Metal compiler. ccv MFA is the closest
+semantic source because it already carries packed signed-Int32 query and
+key/value offsets. The planned optimization is a narrow attributed port of its
+forward varlen tiling, not a dependency on ccv's full C++ runtime. The existing
+online-softmax kernel remains the independent oracle and fallback.

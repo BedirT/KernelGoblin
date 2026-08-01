@@ -1,6 +1,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
+
 kernel void kg_identity_f32(
     const device float* input [[buffer(0)]],
     device float* output [[buffer(1)]],
