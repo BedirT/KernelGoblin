@@ -1,410 +1,313 @@
 # KernelGoblin
 
-> **Correct first. Fast second. Measured always.**
+> Correct first. Fast second. Measured always.
 
 GPU ports are easy to announce and surprisingly hard to trust.
 
-I kept running into the same problem: a useful model ships with a custom CUDA
-kernel, someone rewrites something that looks similar, a tiny demo compiles,
-and suddenly the whole model is described as "ported." What ran? On which GPU?
-Did it match upstream? Was CPU fallback hiding in the graph? Nobody quite
-knows.
+A kernel compiles. A tiny input runs. Maybe a fallback quietly did the real
+work. Somewhere between those facts, the whole model gets called "ported."
+KernelGoblin exists because we want a better answer than that.
 
-KernelGoblin is our attempt to make that work less fuzzy. We pin the real
-upstream source, preserve a reference, execute the physical backend, reconnect
-the kernel to the model, and only then talk about speed.
+This is a reusable home for custom model kernels and complete accelerator
+ports: CUDA to Metal when we want a model to feel native on Apple Silicon,
+CUDA to CUDA when the original kernel is correct but leaves performance on the
+table, and CPU references wherever we need an honest baseline. Every port pins
+its upstream source, carries a known-good oracle, executes the physical backend,
+and reconnects to the real model before we make the larger claim.
 
-The first journey is ambitious on purpose: run
-[`microsoft/TRELLIS.2`](https://github.com/microsoft/TRELLIS.2), including its
-full PBR mesh workflow, on Apple Silicon. The production Apple runtime is being
-built in **Swift + Metal with no PyTorch dependency**. The working Torch/MPS
-port stays around as a pinned conformance oracle while the native runtime earns
-its way to parity.
+Our first not-at-all-small experiment is
+[`microsoft/TRELLIS.2`](https://github.com/microsoft/TRELLIS.2): image-to-3D,
+existing-mesh texturing, UVs, six-channel PBR decoding, texture baking, and
+reloadable GLB export on Apple Silicon.
 
-That boundary is enforced, not ceremonial. `./kg validate` checks the declared
-native source roots, rejects Python/Torch imports there, and keeps the Swift
-package dependency-free. Torch can create immutable comparison fixtures under
-`ports/trellis2/`; it is never part of native setup, testing, or inference.
-KernelGoblin itself remains multi-backend so future CUDA-to-CUDA work still has
-a home.
+## The Short Version
 
-## So, What Did We Actually Run?
+- The production Apple runtime is **Swift + Metal**. It does not import or link
+  Python, PyTorch, MLX, or third-party Swift packages.
+- Model stages are installed independently, hash-verified, memory-mapped, run,
+  synchronized, and released before the next heavyweight stage is opened.
+- Existing-mesh texturing has completed a real, default 12-step native run:
+  223,711 source faces remained 223,711 output faces, two 2048 PBR textures
+  reloaded from the GLB, maximum RSS was 3.04 GB, and the process recorded zero
+  swaps.
+- Native 512 image-to-PBR generation is implemented and its final default-step
+  artifact gate is running. Until that artifact reloads, we keep the full native
+  model status **in progress**.
+- The optional Torch/MPS environment is an isolated oracle. Default install,
+  test, generation, and texturing commands are native.
 
-This input went through the pinned TRELLIS.2 graph on an Apple M3 Pro:
+That last distinction is intentional. Implemented is not the same as verified,
+and a verified component is not automatically a verified model.
 
-| Input image | Verified 1024-cascade output |
+## What We Have Made So Far
+
+The reference journey gave us a real target instead of a collection of guesses:
+
+| Input | Reloaded TRELLIS.2 reference output |
 | :---: | :---: |
-| <img src="docs/assets/trellis2-input-t.png" alt="TRELLIS.2 steampunk machine input" width="420"> | <img src="docs/assets/trellis2-1024-cascade-preview.png" alt="Verified TRELLIS.2 1024 cascade geometry" width="420"> |
+| <img src="docs/assets/trellis2-input-t.png" alt="Steampunk machine used as the TRELLIS.2 input" width="420"> | <img src="docs/assets/trellis2-1024-cascade-preview.png" alt="Reloaded 1024-cascade TRELLIS.2 geometry" width="420"> |
 
-The output is a reloadable GLB with **6,717,817 vertices** and **13,774,312
-faces**. The default 12-step run fit in **15.28 GB maximum RSS** on a 36 GB Mac
-with CPU fallback disabled.
+The right-hand preview is the pinned Torch/MPS **oracle**, not a disguised
+native result. Its 1024-cascade GLB contains 6,717,817 vertices and 13,774,312
+faces. It fit in 15.28 GB maximum RSS on a 36 GB M3 Pro, but took roughly 51
+minutes. That was useful: it proved the graph and the open TRELLIS weights work,
+and gave us immutable outputs to port against. It was never the runtime we
+wanted to ship.
 
-The good news: it works, the geometry is coherent, and the stage-wise memory
-model fits comfortably.
+The native runtime now covers the complete 512 graph:
 
-The less exciting news: the reference MPS run took about **51 minutes**. This
-is a correctness result, not a victory lap about speed. That slow but honest
-baseline is exactly what the native Metal runtime is here to replace.
+```mermaid
+flowchart LR
+    I["Image"] --> V["Apple image prep"]
+    V --> D["DINOv3 conditioner"]
+    D --> S["Sparse structure flow"]
+    S --> O["Occupancy decoder"]
+    O --> F["Shape flow"]
+    F --> G["Shape decoder + O-Voxel mesh"]
+    G --> T["Texture flow"]
+    T --> P["Six-channel PBR decoder"]
+    P --> U["UV raster + bake"]
+    U --> B["Reloadable GLB"]
+```
 
-### Accomplished So Far
+Existing-mesh texturing enters through a second front door:
 
-| Surface | Status | Strongest evidence |
+```mermaid
+flowchart LR
+    M["Mesh"] --> N["Normalize + UV policy"]
+    N --> X["Native O-Voxel voxelizer"]
+    X --> E["Sparse shape encoder"]
+    I["Reference image"] --> D["DINOv3"]
+    E --> T["Guided texture flow + decoder"]
+    D --> T
+    T --> P["Metal PBR bake + GLB"]
+```
+
+## Evidence, Without The Victory-Lap Version
+
+We use four evidence tiers so a useful low-level result cannot quietly become a
+full-model claim.
+
+| Tier | What it means | TRELLIS.2 today |
 | --- | --- | --- |
-| O-Voxel Morton encode/decode | **Verified native Metal** | Bit-exact differential tests plus 65,536 randomized round trips |
-| UV-space PBR raster | **Verified analytic Metal slice** | Physical Metal coverage, winding, degenerate, shared-edge, face-ID, and interpolation tests; CUDA nvdiffrast goldens remain |
-| Swift safetensors runtime | **Verified native foundation** | Parsed the real 1.21 GB DINOv3 checkpoint and mapped it into one no-copy `MTLBuffer` |
-| Real DINOv3 dense projection | **Verified native Metal slice** | `layer.0.attention.q_proj` from the pinned checkpoint, max absolute error `4.77e-7` against a CPU oracle |
-| Complete DINOv3 512 conditioner | **Verified native Metal stage** | All 24 ViT-L/16 blocks run over the real 1,029-token layout; full-output max error `5.30e-5`, RMS `1.92e-6`, 75.9 MB peak arena use, and 2.23 s model time on Apple M3 Pro |
-| Real TRELLIS shape-flow projection | **Verified native Metal slice** | Pinned 2.58 GB checkpoint, BF16 `[1536,32]` input layer, 17 rows, zero BF16 bit mismatches |
-| TRELLIS timestep + shared adaLN | **Verified native Metal slice** | Real sinusoid, two-layer SiLU MLP, and 9,216-channel modulation; zero BF16 bit mismatches |
-| TRELLIS cross-transformer block | **Verified native Metal slice** | Real block 0 normalization, 3D RoPE, two-token self-attention, cross-attention, 8,192-channel MLP, adaLN, and residuals match a pinned Torch BF16 fixture with `0.01747` RMS error |
-| TRELLIS 30-block shape flow | **Verified native Metal stage** | Every production weight and block executes from the pinned 2.58 GB checkpoint; two-token final output matches the Torch oracle with `0.00615` RMS error |
-| TRELLIS 30-block texture flow | **Verified native Metal stage** | The separate pinned 2.58 GB texture checkpoint executes all 30 blocks with the real 64-channel noise-plus-shape input; final RMS error is `0.00733` |
-| Flow Euler + CFG orchestration | **Verified native Swift** | Exact 12-step schedule, interval CFG, rescaling, sequential positive/negative calls, shape and texture normalization, and real two-step checkpoint integrations |
-| Bounded Metal allocation | **Verified native foundation** | Heap-backed arena rejects overflow, records cumulative-requested/current/peak bytes, releases dead buffers, and covers both sampler-to-flow integrations |
-| Synchronized stage lifetime | **Verified native foundation** | DINO, sparse flow/decoder, shape, and texture sessions drain Metal, reach zero live arena bytes, destroy the arena, observe checkpoint `munmap`, and return standalone outputs |
-| Sparse-structure transformer block | **Verified native Metal slice** | Real block 0 from the pinned 2.58 GB dense-flow checkpoint matches its authenticated Torch BF16 trace, including 128-wide SIMD-group attention and 3D RoPE |
-| Sparse-structure 12-step trajectory | **Verified native execution; drift disclosed** | All 22 production model calls run over 4,096 tokens and the real 1,029-token context. Teacher-forced early/middle/late calls stay below `0.01376` normalized RMS; free-running BF16 feedback ends at `0.721` occupancy IoU rather than false exact-parity claims. The flow takes 840.8 s and peaks at 530.2 MiB on M3 Pro |
-| Sparse-structure occupancy decoder | **Verified native Metal stage** | All 74 real tensors execute at the production `16 -> 64` spatial shape; exact occupancy matches the authenticated MPS oracle, normalized RMS is `0.000181`, and the bounded arena peaks at 224 MiB |
-| Occupancy and coordinate extraction | **Verified native Swift** | Strict `> 0`, NaN/zero behavior, z-fast ordered coordinates, and exact 64-to-32 2x max pooling |
-| Shared sparse decoder block | **Verified native Metal slice** | Deterministic 3x3 neighbor maps, F16 submanifold convolution, LayerNorm32, 4x SiLU MLP, and residual graph match real shape-decoder block `0.0`; final normalized RMS is `0.000229` |
-| Complete sparse shape decoder | **Verified native tiny-graph conformance** | All 32 ConvNeXt blocks, four learned subdivisions, final normalization, and seven-channel head execute from the real 948 MB checkpoint; 59 final coordinates match exactly and raw-head normalized RMS is `0.000628` |
-| Complete guided texture decoder | **Verified native tiny-graph conformance** | The real 948 MB texture checkpoint executes all 32 blocks against four shape-derived guides; final coordinates match exactly, raw six-channel normalized RMS is `0.001523`, and the physical-Metal PBR transform reaches `0.001251` |
-| Flexible dual-grid head and mesh extraction | **Verified native analytic slice** | Physical Metal transforms the seven-channel head; Swift preserves O-Voxel axis connectivity, missing-quad behavior, strict diagonal choice, and tie rule. A pinned O-Voxel differential and production decoder handoff remain |
-| CPU mesh to flexible dual grid | **Verified reference extension** | Pinned O-Voxel algorithm through LibTorch, AppleClang portability patch, tetrahedron fixtures; a native Swift implementation remains |
-| Sparse PBR sampling and glTF packing | **Verified reference component** | Bounded sampling, xatlas seams, RGBA and metallic-roughness packing, GLB reload; native assembly remains |
-| TRELLIS.2 512 image-to-3D | **Verified Torch/MPS oracle** | Default 12 steps, reloadable 61 MB GLB |
-| TRELLIS.2 1024 cascade | **Verified Torch/MPS oracle** | Default 12 steps, 15.28 GB maximum RSS, reloadable 272.8 MB GLB |
-| Full PBR image-to-3D | **In progress** | Native UV and synthetic bake pass; full model artifact still needs final end-to-end proof |
-| Existing-mesh texturing | **In progress** | CPU voxelizer, UV policy, staged reference CLI, and PBR baker exist; full native model path remains |
-| Swift + Metal full model | **In progress** | Complete DINO, both SLat graphs, the production 12-step sparse trajectory, and both sparse decoder graphs execute natively; raw-image preprocessing, production shape/texture sampling, production mesh conformance, and PBR assembly remain |
+| End-to-end verified | Default settings, real checkpoints, physical backend, artifact reload | Native existing-mesh texturing; Torch/MPS 512 and 1024-cascade oracles |
+| Production-stage verified | Complete real stage and checkpoint execute with authenticated comparisons | DINOv3, both 30-block flows, sparse structure flow/decoder, shape encoder, shape decoder, guided texture decoder |
+| Analytic or tiny-fixture verified | Real backend and exact contract, deliberately small workload | Morton coding, UV raster, sparse attention, O-Voxel mesh extraction, PBR bake and GLB packing |
+| Implemented, acceptance pending | Full call path exists but its final artifact gate is not complete | Native 512 image-to-PBR generation |
 
-That distinction matters. A kernel can be verified while a pipeline is still
-unfinished. We do not promote the larger claim just because a nearby test is
-green.
+Some useful numbers from the physical M3 Pro verification:
 
-## How It Works
+- 93 real-checkpoint and component tests passed under Metal API validation.
+- The full 12-step sparse-structure trajectory executed all 22 model calls;
+  teacher-forced probes stayed below `0.01376` normalized RMS.
+- Free-running BF16 feedback reached `0.7208` occupancy IoU with the captured
+  oracle. We report that drift instead of calling it exact parity.
+- The full shape encoder reaches `0.000700` normalized RMS. The authenticated
+  mesh-to-O-Voxel-to-encoder handoff reaches `0.000555`, with exact sparse
+  coordinates and all four subdivision guides.
+- Shape and texture decoder PBR outputs reach `0.000628` and `0.001251`
+  normalized RMS on their pinned fixtures.
+- Every recorded heavyweight stage returns its bounded Metal arena to zero live
+  bytes before its checkpoint mapping is closed.
 
-Every kernel follows the same path:
+The detailed ledger, exact hashes, timing boundaries, and semantic gaps live in
+[`docs/TRELLIS2_PORT.md`](docs/TRELLIS2_PORT.md). The machine-readable source of
+truth is [`ports/trellis2/model.toml`](ports/trellis2/model.toml).
 
-```mermaid
-flowchart LR
-    A["Pin it"] --> B["Understand it"]
-    B --> C["Port it"]
-    C --> D["Compare it"]
-    D --> E["Run it in the model"]
-    E --> F["Measure it"]
-```
+## Native Quick Start
 
-1. **Pin it.** Record the exact repository, revision, source paths, license,
-   model checkpoint, and call site.
-2. **Understand it.** Capture shapes, layouts, dtypes, edge behavior, overflow,
-   errors, and synchronization boundaries before translating code.
-3. **Port it.** Preserve the algorithm first. Clever changes can wait until we
-   have something correct to compare against.
-4. **Compare it.** Run deterministic references, randomized differential
-   fixtures, invalid inputs, boundaries, and the real accelerator.
-5. **Run it in the model.** A standalone kernel is not a model port. The real
-   call site has to dispatch it and produce a valid artifact.
-6. **Measure it.** Benchmarks disclose the device, workload, warmup,
-   synchronization, transfers, allocations, and exactly what the timer covers.
-
-## Fitting TRELLIS.2 Into Smaller Macs
-
-TRELLIS.2 is called a 4B model, but that does not mean inference needs only the
-bytes occupied by four billion weights. Image conditioning, multiple flow
-models, shape and texture decoders, sparse topology, activations, allocator
-state, mesh copies, UV charts, and a multi-million-texel bake all share the
-same unified memory.
-
-The current reference runtime already loads one component at a time:
-
-```mermaid
-flowchart LR
-    A["Load one stage"] --> B["Run every consumer"]
-    B --> C["Synchronize GPU"]
-    C --> D["Evict weights and scratch"]
-    D --> E["Load next stage"]
-```
-
-The native runtime goes further. Each installed stage will be page-aligned,
-hash-verified, mapped from disk, and wrapped with
-`MTLBuffer(bytesNoCopy:)`. Fixed scratch buffers refuse oversized work instead
-of quietly expanding. A `StageSession` owns the queue, arena, checkpoint, and
-model graph; it cannot unmap weights until the queue drains and every arena
-buffer is gone. Only a standalone semantic result crosses the boundary. The
-important granularity is a **whole TRELLIS stage**, not one transformer layer
-at a time.
-
-This choice comes from investigating
-[`drumih/turbo-fieldfare`](https://github.com/drumih/turbo-fieldfare/tree/1859181ae26eb39c9698437f806be62adc01367c),
-an immaculate Swift/Metal runtime that runs a large mixture-of-experts model on
-small Macs. Its bounded installer, mapped buffers, verified receipts, and
-memory ledger fit our case beautifully. Its expert cache does not: TRELLIS is
-dense and touches every layer during every denoising step, so streaming the
-same stage from SSD twelve times would trade a memory problem for an I/O
-problem.
-
-The complete decision and package design live in
-[`docs/NATIVE_TRELLIS2_ARCHITECTURE.md`](docs/NATIVE_TRELLIS2_ARCHITECTURE.md).
-
-## Try The Native Work
-
-You need Apple Silicon, Xcode with the Metal toolchain, Swift 6.2+, CMake 3.25+,
-and Ninja.
+You need an Apple Silicon Mac, Xcode with the Metal toolchain, Swift 6.2+,
+CMake 3.25+, and Ninja.
 
 ```sh
 ./kg doctor
 ./kg list
 ./kg validate
-
-# Native Swift + Metal checkpoint and model-layer tests
-./kg model native-setup trellis2
-./kg model native-audit trellis2
-./kg model native-test trellis2
-./kg model native-benchmark trellis2
-
-# Two independently buildable Metal kernels
-./kg test trellis2/z_order
-./kg test trellis2/uv_raster
-./kg benchmark trellis2/uv_raster
 ```
 
-`kg-trellis2` itself has no Python or Torch dependency. The lightweight `./kg`
-developer wrapper uses the system Python standard library; commands in the
-reference section below create a separate, ignored Torch environment.
-
-The native CLI can inspect a real safetensors checkpoint without Torch:
+TRELLIS.2's own model weights are open under MIT. Its image pipelines also use
+Meta's separately gated DINOv3 encoder. Accept the DINOv3 terms on Hugging Face
+once and provide a read token for installation:
 
 ```sh
-swift run -c release kg-trellis2 \
-  inspect-checkpoint /path/to/model.safetensors
-```
+export HF_TOKEN=hf_...
 
-It can also map the pinned DINOv3 checkpoint without a heap-sized weight copy
-and dispatch a real attention projection on Metal:
-
-```sh
-swift run -c release kg-trellis2 \
-  verify-dino-linear /path/to/dinov3/model.safetensors
-```
-
-And the first layer from the real 2.58 GB TRELLIS shape-flow checkpoint:
-
-```sh
-swift run -c release kg-trellis2 \
-  verify-slat-input-layer /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors
-
-swift run -c release kg-trellis2 \
-  verify-slat-conditioning /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors
-
-swift run -c release kg-trellis2 \
-  verify-slat-self-attention /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors
-
-swift run -c release kg-trellis2 \
-  verify-slat-cross-attention /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors
-```
-
-Both verification commands authenticate the complete checkpoint SHA-256
-before reporting a pinned-model result. The TRELLIS slice maps 2.584 GB,
-copies zero weight bytes into a second heap allocation, and compares all
-26,112 input-layer outputs with an independent CPU calculation before the
-BF16 cast. The conditioning command continues through the real timestep MLP
-and shared adaLN projection, producing 9,216 modulation channels with zero
-post-cast BF16 bit mismatches. The attention commands execute the real block 0
-weights through custom fused Metal attention without allocating a token by
-token score matrix.
-
-The strongest native block check uses a tiny committed fixture captured from
-the pinned upstream Torch implementation. Torch is needed only to regenerate
-that fixture, not to execute the Swift test:
-
-```sh
-KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT=/path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors \
-  swift test --filter realSLatBlockGolden
-```
-
-On the M3 Pro this runs one complete real block, including LayerNorm32, 3D RoPE,
-self-attention, cross-attention, the 8,192-channel feed-forward network, adaLN,
-and residuals. CPU Torch and Metal use different reduction trees, so the test
-uses a BF16 differential bound rather than pretending bit identity is
-meaningful across different reduction trees. The two-token fixture exercises
-real Q/K scoring; every output is finite, maximum absolute error is `0.25`,
-and aggregate RMS error is `0.01747` over 3,072 values.
-
-The fused attention primitive now accepts validated signed-32-bit-compatible
-segment offsets and proves that packed samples cannot cross-attend. The complete
-SLat graph still enforces batch one because timestep modulation also needs a
-per-token batch map before multi-sample execution would be correct.
-
-The standard `./kg model native-test trellis2` command carries that block
-through both complete 30-block SLat flows with their separate real production
-checkpoints. It also drives each flow repeatedly through the native Euler
-sampler and keeps temporary allocations inside a hard Metal heap budget. The
-deliberately tiny two-token inputs keep this acceptance test quick while still
-covering both full graphs. Shape-flow RMS error is `0.00615`; texture-flow RMS
-error is `0.00733`. The two-step shape trajectory reports bounded numerical
-drift separately because CFG feeds small cross-backend reduction differences
-back into the next model call. These are graph and orchestration proofs, not
-representative sparse-token memory or generation-speed claims.
-
-The production sparse stage now goes beyond the quick graph check. It executes
-the default 12-step schedule, all 22 CFG/model calls, and then closes and
-unmaps the 2.58 GB flow stage before loading the 148 MB occupancy decoder. On
-the M3 Pro, flow execution takes 840.8 seconds, decoder execution takes 8.7
-seconds, and the two bounded arenas peak at 555,905,112 and 234,881,024 bytes.
-
-There is an important precision wrinkle here. If native Metal is given the
-exact upstream state at four points across the trajectory, each complete
-30-block call stays within `0.01376` normalized RMS of Torch/MPS. When those
-small BF16 reduction differences are fed back through all 22 calls, however,
-the final latent reaches `0.5133` normalized RMS and its decoded occupancy has
-`0.7208` IoU with the same-seed oracle. We treat the teacher-forced checks as
-model conformance and the free-running result as a structural stability gate.
-Calling the latter exact parity would be nicer marketing and worse engineering.
-
-The native dense benchmark compares the original 16-by-16 tiled BF16-weight
-projection with the new optional 8-by-8 SIMD-group matrix path. It performs a
-CPU and cross-kernel correctness gate before five warmups and twenty synchronized,
-counterbalanced measurements. On an Apple M3 Pro running macOS 26.5.2,
-representative median speedups are `1.25x` for the sparse input projection,
-`1.61x` for cross-attention KV, and `1.65x` for the 4,096-by-8,192 MLP
-projection. A one-row conditioning projection is `0.94x`,
-so automatic dispatch deliberately keeps rows below eight on the tiled path.
-The timer includes command creation, encode, commit, and completion wait, but
-excludes allocation and checkpoint mapping.
-
-On the development M3 Pro, the current UV raster benchmark reports:
-
-```text
-backend=Metal device="Apple M3 Pro"
-workload=1024x1024 faces=2 warmup=3 iterations=20
-timing=host allocation + upload + draw + synchronized readback
-median_ms=6.810
-```
-
-This is an analytic two-triangle workload, not a full texture-bake timing.
-
-## Run The Reference Model Today
-
-Until the native graph reaches end-to-end parity, the pinned Torch/MPS runtime
-remains available as a reference. It is isolated under `build/`; it does not
-install packages globally.
-
-TRELLIS.2's own weights are open. The upstream image pipeline separately uses
-Meta's gated DINOv3 encoder, so you must accept its terms on Hugging Face and
-authenticate once.
-
-```sh
+# Install all eight pinned components. Existing verified HF cache files are
+# linked rather than downloaded again.
 ./kg model setup trellis2
-./kg model test trellis2
 
+# Or install only what one workflow needs.
+./kg model setup trellis2 --feature generate
+./kg model setup trellis2 --feature texture
+```
+
+Generate a PBR GLB from an image:
+
+```sh
 ./kg model run trellis2 \
   --input image.png \
-  --output build/trellis2/output-512
+  --output build/trellis2/my-model.glb \
+  --steps 12 \
+  --texture-size 2048
+```
 
-./kg model run trellis2 \
+Texture an existing mesh from a reference image:
+
+```sh
+./kg model texture trellis2 \
+  --mesh model.ply \
+  --input reference.png \
+  --output build/trellis2/textured.glb \
+  --uv-policy preserve-or-generate \
+  --steps 12 \
+  --texture-size 2048
+```
+
+Opaque inputs use Apple Vision foreground masking by default. Use
+`--require-alpha` when an alpha matte is part of your input contract, or
+`--accept-opaque` only when the background is already harmless.
+
+Run the native verification ladder:
+
+```sh
+./kg model test trellis2
+./kg model native-audit trellis2
+./kg model native-benchmark trellis2
+./kg model native-pbr-benchmark trellis2
+```
+
+`./kg model test` is intentionally substantial: it authenticates real
+checkpoints and executes complete stages, including the production 12-step
+sparse trajectory. Use focused `swift test --filter ...` commands while
+developing one component.
+
+## Why A 4B Model Needs More Than 8 GB
+
+"4B" counts parameters in one headline model. It is not a memory budget.
+TRELLIS.2 also needs DINO conditioning, multiple flow checkpoints, sparse
+activations, decoder features, coordinate maps, mesh topology, UV seams, and
+multi-million-texel PBR buffers. On a unified-memory Mac, the CPU and GPU share
+the same pool too.
+
+KernelGoblin avoids keeping the entire graph resident:
+
+```mermaid
+flowchart LR
+    A["Map one verified checkpoint"] --> B["Run the stage"]
+    B --> C["Wait for Metal"]
+    C --> D["Copy the small semantic result"]
+    D --> E["Release arena + unmap weights"]
+    E --> F["Open the next stage"]
+```
+
+This is where the ideas from
+[`drumih/turbo-fieldfare`](https://github.com/drumih/turbo-fieldfare/tree/1859181ae26eb39c9698437f806be62adc01367c)
+fit beautifully: authenticated receipts, mapped buffers, explicit ownership,
+and a memory ledger. We did **not** copy its expert cache. TRELLIS stages are
+dense and touch every block on every denoising step; streaming those same
+weights from SSD twelve times would replace a memory problem with an I/O
+problem.
+
+The full rationale is in
+[`docs/NATIVE_TRELLIS2_ARCHITECTURE.md`](docs/NATIVE_TRELLIS2_ARCHITECTURE.md).
+
+## The Optional Oracle
+
+Python and Torch are kept on purpose, but only behind explicitly named oracle
+commands in an ignored environment under `build/`:
+
+```sh
+./kg model oracle-setup trellis2
+./kg model oracle-test trellis2
+
+./kg model oracle-run trellis2 \
   --pipeline-type 1024_cascade \
   --input image.png \
-  --output build/trellis2/output-1024
+  --output build/trellis2/oracle-output
 ```
 
-Those commands preserve the proven vertex-color export. The portable PBR path
-is deliberately explicit until its upstream mesh fixtures pass:
+The oracle generates fixtures and answers questions such as "what did pinned
+upstream do at this exact boundary?" It is not installed by native setup and is
+not loaded by native inference.
 
-```sh
-./kg model run trellis2 --experimental-pbr \
-  --input image.png --output build/trellis2/output-pbr
+## Known Differences We Still Care About
+
+This is a proper port, not a claim that Apple and CUDA take identical floating-
+point paths.
+
+- Native `--seed` uses documented SplitMix64 plus Box-Muller noise. It is
+  deterministic across native runs, but the same number does not reproduce
+  PyTorch's RNG stream.
+- Apple Vision foreground masking is a portable native policy, not numerical
+  parity with upstream RMBG.
+- Supplied UVs can be preserved as a useful extension. Pinned upstream
+  texturing regenerates its atlas through CuMesh.
+- Model I/O unwrap is used only when it preserves all valid faces. A
+  deterministic per-face atlas is the topology-safe native fallback; it is
+  reproducible, but it is not CuMesh atlas-quality parity.
+- Metal and Torch use different BF16 reduction trees. Teacher-forced stage
+  comparisons are tight, while a complete free-running trajectory accumulates
+  measurable sparse occupancy drift.
+- The PBR bake benchmark is an analytic synchronized bake-stage benchmark, not
+  a full export or representative-model performance claim.
+
+These are tracked as contracts, not buried as footnotes. The next work is to
+replace portability tiers with authenticated upstream-equivalent tiers where
+that improves the artifact, then optimize the kernels that profiling says are
+actually expensive.
+
+## How A Kernel Enters The Repo
+
+```mermaid
+flowchart LR
+    A["Pin source + license"] --> B["Capture the real call contract"]
+    B --> C["Write or preserve an oracle"]
+    C --> D["Port for behavior"]
+    D --> E["Differential test on the GPU"]
+    E --> F["Reconnect the model"]
+    F --> G["Benchmark honestly"]
 ```
 
-The experimental flag runs real Metal rasterization and glTF material packing,
-but it does not yet carry an upstream-parity or completed full-run claim. The
-reference code itself is not the desired shipping architecture. Its job is to
-provide real checkpoints, intermediate fixtures, end-to-end artifacts, and a
-known behavior contract while we remove Torch from the production path.
-
-## What “Verified” Means Here
-
-Compiling is not execution. Execution is not conformance. Conformance for one
-kernel is not full-model success.
-
-A verified kernel includes:
-
-- immutable upstream provenance and license;
-- a CPU reference or independently captured golden fixture;
-- representative, boundary, randomized, and invalid-input coverage;
-- a test that dispatches the named physical backend;
-- error checking and explicit synchronization; and
-- a correctness-gated benchmark with honest timing boundaries.
-
-A verified model run additionally records input and output hashes, exact
-checkpoint revisions, steps, device and framework details, geometry and
-material validation, elapsed time, memory evidence, and a reload of the final
-artifact.
-
-See [`docs/TRELLIS2_PORT.md`](docs/TRELLIS2_PORT.md) for the original reference
-runs and [`kernels/trellis2/uv_raster/README.md`](kernels/trellis2/uv_raster/README.md)
-for the newest native kernel boundary.
-
-## Where We Are Going
-
-### Now
-
-- Replace the correctness-first quadratic attention kernel with a tiled native
-  implementation, then exercise both flows at captured production token counts
-  under the new hard Metal arena budget.
-- Authenticate the production-scale shape/texture decoder and flexible
-  dual-grid mesh handoff under hard stage memory limits.
-- Finish native image preprocessing, stage installation, UV/remesh, raster,
-  texture bake, and material-aware GLB assembly.
-
-### Next
-
-- Produce native 512 image-to-PBR-GLB and existing-mesh texturing artifacts.
-- Compare native intermediates and rendered views with the pinned reference.
-- Profile the complete pipeline, then fuse the actual bottlenecks instead of
-  guessing which kernel looks interesting.
-
-### Later
-
-- Verify direct 1024 and 1536 independently.
-- Add more real model kernels across Metal and CUDA without making every
-  dependency mandatory.
-- Grow a library of ports that upstream model projects can actually trust.
-
-Now that we know the reference graph works, we can make it native and fast.
+Each kernel is independently selectable. `./kg setup trellis2/z_order` should
+not install a model, and adding a future CUDA optimization should not make an
+Apple user build it. The checked-in `$port-gpu-kernel` skill and `AGENTS.md`
+give Codex the same verification rules we use manually.
 
 ## Repository Map
 
 | Path | Purpose |
 | --- | --- |
-| `Sources/KernelGoblinTrellis2/` | No-Torch Swift checkpoint, memory, and model runtime |
-| `kernels/<model>/<operation>/` | Independently buildable CPU, Metal, or CUDA kernels |
-| `ports/trellis2/` | Pinned Torch/MPS oracle, geometry reference, and parity fixtures |
-| `kg`, `tools/kg.py` | Dependency-free selection, setup, test, benchmark, and model CLI |
-| `.agents/skills/` | Reusable repository-local kernel-port workflow |
-| `.codex/agents/` | Narrow read-only research and review specialists |
-| `docs/` | Architecture, evidence, toolchain, and harness decisions |
-| `build/`, `.build/` | Ignored native builds, weights, scratch, and generated evidence |
+| `kg`, `tools/kg.py` | Dependency-free selection, setup, validation, model, and benchmark CLI |
+| `kernels/<model>/<operation>/` | One independently buildable CPU/Metal/CUDA kernel contract |
+| `Sources/KernelGoblinTrellis2/` | Native checkpoint, model, geometry, PBR, memory, and coordinator runtime |
+| `ports/trellis2/` | Optional pinned Torch/MPS oracle and fixture exporters |
+| `.agents/skills/port-gpu-kernel/` | Reusable agent workflow for kernel intake and verification |
+| `.codex/agents/` | Read-only upstream, correctness, and benchmark specialists |
+| `docs/` | Architecture decisions, provenance, evidence, and toolchain notes |
+| `build/`, `.build/` | Ignored weights, environments, artifacts, and build products |
 
-## Building With Agents, Without Outsourcing Trust
+## Where We Are Going
 
-The agent harness helps us trace upstream code, split bounded research, and run
-independent reviews. It is not the evidence.
+1. Finish and publish the native 512 image-to-PBR artifact record.
+2. Add rendered native before/after views and image-level comparisons to the
+   pinned oracle, not just structural GLB validation.
+3. Improve the portable UV fallback toward CuMesh-quality charting while
+   preserving strict topology gates.
+4. Profile real end-to-end runs, tile the expensive sparse kernels, and publish
+   representative workload benchmarks only after correctness gates.
+5. Add the next model port without turning setup into one giant dependency
+   bucket.
 
-Deterministic tests, physical backend dispatch, final artifact validation, and
-reproducible manifests remain the evidence. Start with [`AGENTS.md`](AGENTS.md)
-and the repository skill in
-[`docs/AGENT_HARNESS.md`](docs/AGENT_HARNESS.md) if you are contributing a port.
+No shortcuts, no mystery fallbacks, and no pretending one green kernel means
+the whole model is done. That is the goblin's job.
 
-## Upstream And License
+## Provenance And License
 
-- TRELLIS.2 source: [`microsoft/TRELLIS.2`](https://github.com/microsoft/TRELLIS.2)
-- Pinned source revision: `75fbf0183001ed9876c8dbb35de6b68552ee08bd`
+- TRELLIS.2 source: `75fbf0183001ed9876c8dbb35de6b68552ee08bd`
 - TRELLIS.2-4B weights: `af44b45f2e35a493886929c6d786e563ec68364d`
-- KernelGoblin license: [MIT](LICENSE)
-- Third-party provenance: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- TRELLIS image-large weights: `25e0d31ffbebe4b5a97464dd851910efc3002d96`
+- DINOv3 weights: `ea8dc2863c51be0a264bab82070e3e8836b02d51`
+- Turbo Fieldfare research pin: `1859181ae26eb39c9698437f806be62adc01367c`
 
-Bring a real kernel, its real call site, and the hardware you care about. The
-goblin will take it from there.
+KernelGoblin's code is MIT licensed. Upstream source and model licenses remain
+theirs; the selected kernel and model manifests record exact provenance.

@@ -1,242 +1,276 @@
 # TRELLIS.2 On Apple Silicon
 
-> The honest record of what ran, what it proved, and what still has to earn the
-> word "ported."
+This document is the evidence ledger for KernelGoblin's TRELLIS.2 port. The
+friendly tour lives in the root `README.md`; this is where we keep exact
+boundaries, pins, observed memory, and the awkward differences that still
+matter.
 
-## The Short Version
+## Current Claim
 
-We have run the pinned TRELLIS.2 512 and 1024-cascade image-to-3D graphs on an
-Apple M3 Pro through a Torch/MPS reference runtime. The 1024 result fit in
-15.28 GB maximum RSS and produced a reloadable 272.8 MB GLB. It also took about
-51 minutes, which is why that runtime is now an oracle rather than the product.
+The 512 production graph is implemented in Swift and Metal, including raw image
+preprocessing, DINOv3 conditioning, sparse and structured-latent flows, native
+shape encoding/decoding, flexible-dual-grid geometry, UV preparation,
+six-channel PBR decoding, Metal texture baking, Telea inpainting, and GLB
+writing/reload validation.
 
-The production Apple port is **Swift + Metal with no Torch dependency**. It
-already validates and memory-maps real safetensors files, owns bounded Metal
-scratch, executes the complete 24-block DINOv3 conditioner and both TRELLIS
-SLat flows through native samplers, and includes native Morton and UV-raster
-kernels. The native sparse-structure trajectory and complete sparse shape
-decoder and guided sparse texture decoder are now verified on authenticated
-fixtures. Raw-image preprocessing, production-scale shape and texture sampling,
-upstream-faithful PBR export, and existing-mesh texturing remain in progress.
+The default 12-step **existing-mesh texturing** workflow is end-to-end verified
+on a physical Apple M3 Pro. The default-step **image-to-3D** artifact gate is in
+progress. Therefore the machine-readable full-model status remains
+`in-progress`; implementation coverage is not promoted into an artifact claim.
 
-That split is deliberate. A finished reference graph tells us what native code
-must match. A native kernel test tells us one operation is correct. Neither is
-silently promoted into a full native-model claim.
+The shipping boundary is:
+
+```text
+production = Swift + Metal + Apple system frameworks
+oracle     = isolated Python + Torch + MPS under build/
+```
+
+`./kg validate` enforces allowed native source extensions, forbidden runtime
+imports, and the empty external Swift-package dependency set.
+`./kg model native-audit trellis2` audits the release Mach-O and currently finds
+zero Python/Torch/MLX dependencies.
 
 ## Pinned Provenance
 
-| Artifact | Revision | License |
+| Artifact | Revision | License / access |
 | --- | --- | --- |
 | [`microsoft/TRELLIS.2`](https://github.com/microsoft/TRELLIS.2) | `75fbf0183001ed9876c8dbb35de6b68552ee08bd` | MIT |
-| `microsoft/TRELLIS.2-4B` | `af44b45f2e35a493886929c6d786e563ec68364d` | MIT |
-| `microsoft/TRELLIS-image-large` | `25e0d31ffbebe4b5a97464dd851910efc3002d96` | MIT |
-| `facebook/dinov3-vitl16-pretrain-lvd1689m` | `ea8dc2863c51be0a264bab82070e3e8836b02d51` | DINOv3 license, gated |
-| Optional `briaai/RMBG-2.0` | `5df4c9c76d8170882c34f6986e848ee07fd0ba43` | CC BY-NC 4.0, gated |
+| `microsoft/TRELLIS.2-4B` | `af44b45f2e35a493886929c6d786e563ec68364d` | MIT, open weights |
+| `microsoft/TRELLIS-image-large` | `25e0d31ffbebe4b5a97464dd851910efc3002d96` | MIT, open weights |
+| `facebook/dinov3-vitl16-pretrain-lvd1689m` | `ea8dc2863c51be0a264bab82070e3e8836b02d51` | Separate gated terms |
+| [`drumih/turbo-fieldfare`](https://github.com/drumih/turbo-fieldfare) | `1859181ae26eb39c9698437f806be62adc01367c` | Architecture research pin |
 
-TRELLIS weights are open. DINOv3 is separately gated because the upstream
-pipeline uses it to turn the input image into conditioning tokens. Native code
-does not remove that access requirement and KernelGoblin never redistributes
-the checkpoint.
+TRELLIS.2's weights are open. DINOv3 is a separate dependency used for image
+conditioning, which is why a fresh install still needs accepted DINO terms and
+`HF_TOKEN`. The native installer records the repository, revision, path, byte
+count, and SHA-256 for every selected file.
 
-Exact repository paths, byte counts, SHA-256 values, dtypes, roles, and sampler
-settings for all eight 512 components are machine-readable in
-[`ports/trellis2/model.toml`](../ports/trellis2/model.toml).
+## Exact Native Workflows
 
-## Evidence At A Glance
+### Image To PBR GLB
 
-| Surface | Current status | Acceptance boundary |
+1. Decode the image with Apple frameworks.
+2. Validate or create a foreground mask, crop the alpha bounds, premultiply,
+   resize to 518, center-crop to 512, and apply ImageNet normalization.
+3. Run the complete DINOv3 ViT-L/16 conditioner over 1,029 tokens.
+4. Sample the dense 16-cubed sparse-structure flow with the pinned 12-step
+   Euler/CFG schedule.
+5. Decode occupancy at 64 cubed and pool ordered coordinates to 32 cubed.
+6. Sample the 30-block shape flow.
+7. Decode the native sparse shape hierarchy, transform its seven-channel head,
+   build the flexible-dual-grid mesh, and fill triangle/quad boundary holes.
+8. Sample the 30-block texture flow and decode six PBR channels over the guided
+   sparse hierarchy.
+9. Prepare a topology-safe UV atlas, rasterize positions in UV space on Metal,
+   sample sparse PBR fields, and inpaint uncovered texels.
+10. Pack base-color/alpha and metallic-roughness textures into a GLB, reload it,
+    validate geometry/material/embedded PNG contracts, and hash the artifact.
+
+### Existing Mesh Texturing
+
+1. Load and combine Model I/O meshes with transforms applied.
+2. Normalize geometry with the pinned TRELLIS rule.
+3. Preserve supplied UVs, generate with Model I/O only when topology remains
+   exact, or use the deterministic native per-face fallback.
+4. Convert the mesh to O-Voxel flexible-dual-grid coordinates in Swift.
+5. Build the exact centered six-channel shape-encoder input.
+6. Run DINOv3, the complete shape encoder, texture flow, and guided texture
+   decoder one stage at a time.
+7. Bake and reload the same native PBR GLB contract.
+
+## Stage Ownership And Smaller Macs
+
+Each heavyweight stage is owned by a `StageSession`:
+
+```mermaid
+sequenceDiagram
+    participant C as Coordinator
+    participant S as StageSession
+    participant M as Metal queue/arena
+    participant W as Mapped weights
+    C->>S: Open pinned checkpoint + fixed budget
+    S->>M: Encode complete stage
+    M-->>S: Synchronized semantic output
+    S-->>C: Standalone shared buffer + topology
+    S->>M: Verify zero live arena bytes
+    S->>W: munmap checkpoint
+    C->>C: Open next stage only now
+```
+
+The arena has a hard capacity and records capacity, peak live bytes, cumulative
+requested bytes, allocation count, and live bytes after close. Oversized work
+fails instead of silently growing the allocator. Checkpoints are authenticated
+before execution and mapped with `MTLBuffer(bytesNoCopy:)` rather than copied
+into a second weight-sized heap.
+
+This borrows Turbo Fieldfare's strongest ideas: explicit ownership, mapped
+files, verified receipts, and measured lifecycle boundaries. TRELLIS does not
+use its SSD expert cache because every dense stage reuses every block on every
+step.
+
+## Verification Ledger
+
+The table deliberately separates full production stages from analytic or tiny
+fixtures.
+
+| Surface | Evidence level | Strongest accepted evidence |
 | --- | --- | --- |
-| 512 image-to-3D | Verified Torch/MPS oracle | Default 12 steps, validated/reloaded GLB |
-| 1024 cascade | Verified Torch/MPS oracle | Default 12 steps, 15.28 GB RSS, zero process swaps |
-| Safetensors | Verified native foundation | Exact JSON integers, contiguous non-overlapping ranges, single-descriptor parse/map |
-| DINO q projection | Verified native slice | Hash-authenticated 1.21 GB checkpoint, F32 Metal/CPU differential |
-| DINOv3 512 conditioning | Verified native stage | Complete 24-block ViT-L/16, 1,029 tokens, max error `5.30e-5`, RMS `1.92e-6`, physical Metal |
-| TRELLIS shape input layer | Verified native slice | Hash-authenticated 2.58 GB checkpoint, BF16 weight decode, 26,112 outputs, zero BF16 bit mismatches |
-| TRELLIS timestep + shared adaLN | Verified native slice | Real Metal sinusoid, SiLU MLP, 9,216-channel modulation, zero BF16 bit mismatches |
-| TRELLIS block 0 | Verified native slice | Two-token 3D RoPE, normalization, fused self/cross attention, 8,192-channel MLP, adaLN, and residual graph; `0.01747` RMS against pinned Torch BF16 fixture |
-| TRELLIS shape flow | Verified native stage | Complete real input/timestep/adaLN/30-block/output graph; two-token F32 output has `0.00615` RMS error against pinned Torch |
-| TRELLIS texture flow | Verified native stage | Separate real 64-channel input/30-block/output graph; two-token F32 output has `0.00733` RMS error against pinned Torch |
-| Native Flow Euler | Verified native orchestration | Exact schedule, interval CFG/rescale, shape/texture normalization, and repeated real-checkpoint flow calls |
-| Metal memory arena | Verified native foundation | Hard heap capacity, overflow rejection, and current/peak/cumulative allocation evidence across both sampler integrations |
-| Stage lifecycle | Verified native foundation | Queue drain, zero live arena bytes, arena destruction, observed checkpoint unmap, error-path cleanup, and standalone outputs |
-| Sparse-structure block | Verified native Metal slice | Real dense-flow block 0, 128-wide SIMD-group attention, 3D RoPE, and authenticated BF16 stage trace |
-| Sparse-structure production flow | Verified native 12-step execution; drift disclosed | All 22 calls at 4,096 tokens; teacher-forced probes stay below `0.01376` normalized RMS, free-running occupancy reaches `0.7208` IoU, and the arena peaks at 555,905,112 bytes |
-| Sparse occupancy decoder | Verified native Metal stage | All 74 real tensors at production 16-to-64 size, exact occupancy parity, `0.000181` normalized RMS, 224 MiB peak arena |
-| Occupancy extraction | Verified native Swift | Strict threshold, bit packing, ordered coordinates, and exact 2x pooling |
-| Shared sparse decoder block | Verified native Metal slice | Real shape-decoder block `0.0`, deterministic 3x3 neighbor map, F16 submanifold convolution and MLP boundaries; final normalized RMS `0.000229` |
-| Complete sparse shape decoder | Verified native tiny-graph conformance | Real 948 MB checkpoint, 32 ConvNeXt blocks, four C2S subdivisions, exact final coordinates, raw-head normalized RMS `0.000628`; production token scale remains |
-| Complete guided texture decoder | Verified native tiny-graph conformance | Real 948 MB checkpoint, 32 ConvNeXt blocks, four shape guides, exact final coordinates, raw normalized RMS `0.001523`, PBR-transform normalized RMS `0.001251` |
-| Flexible dual-grid head and mesh | Verified native analytic slice | Physical Metal head transforms and Swift O-Voxel connectivity/tie behavior; pinned extraction differential and production handoff remain |
-| Morton coding | Verified native Metal | Bit-exact differential and randomized round trips |
-| UV raster | Verified analytic Metal slice | Physical render, analytic coverage/interpolation; nvdiffrast CUDA goldens pending |
-| PBR bake | Experimental reference | Synthetic component tests and GLB reload; upstream mesh semantics pending |
-| Existing-mesh texturing | In progress | Staged reference orchestration exists; complete artifact proof pending |
-| Full Swift + Metal model | In progress | Complete DINO, both SLat graphs, the 12-step sparse trajectory, and both sparse decoders execute natively; image preprocessing, production shape/texture runs, mesh conformance, and PBR assembly remain |
+| Safetensors and mapping | Native foundation | Exact integer parsing, range validation, one mapped descriptor, full-file SHA-256, unmap witness |
+| DINOv3 conditioner | Full native stage | 24 blocks, real 1.21 GB checkpoint, 1,029 tokens, max error `5.30e-5`, RMS `1.92e-6`, physical Metal |
+| Shape SLat flow | Full native stage | Real 2.58 GB checkpoint, all 30 blocks, tiny-graph RMS `0.00615` |
+| Texture SLat flow | Full native stage | Separate real 2.58 GB checkpoint, all 30 blocks, tiny-graph RMS `0.00733` |
+| Euler + CFG | Native orchestration | Exact 12-step schedule, interval CFG/rescale, sequential positive/negative calls, normalization boundaries |
+| Sparse-structure flow | Production native execution | 4,096 tokens, all 22 model calls; teacher probes <= `0.01376` normalized RMS; 555,905,112-byte arena peak |
+| Sparse occupancy decoder | Full native stage | All 74 tensors, 16-to-64 spatial graph, exact occupancy fixture, normalized RMS `0.000181`, 234,881,024-byte peak |
+| Occupancy extraction | Native Swift | Strict `> 0`, NaN/zero behavior, z-fast ordering, exact 2x pooling |
+| Shape decoder | Full native graph on authenticated small topology | 32 ConvNeXt blocks, four subdivisions, exact coordinates, normalized RMS `0.000628` |
+| Texture decoder | Full guided graph on authenticated small topology | 32 blocks, four guides, exact coordinates, raw RMS `0.001523`, PBR RMS `0.001251` |
+| Mesh -> O-Voxel -> shape encoder | Authenticated production handoff fixture | Exact coordinates/flags/guides; dual vertices <= `2e-5`; latent normalized RMS `0.000555` |
+| O-Voxel voxelizer | Native CPU differential | 119 pinned oracle voxels; exact coordinate order and flags; dual vertices <= `2e-5` |
+| Flexible-dual-grid mesh | Native analytic differential | Axis connectivity, missing quads, diagonal/tie rule, head transform on physical Metal |
+| Hole filling | Native upstream behavior fixture | Pinned Trimesh-compatible triangle and quad boundary loops |
+| UV preparation | Native component | Supplied preservation, deterministic Model I/O atlas, strict face-count gate, topology-safe per-face fallback |
+| UV raster | Physical Metal component | Coverage, interpolation, winding, face IDs, degenerate and shared-edge behavior |
+| PBR sampling/packing | Native component | Half-voxel sparse sampling, OpenCV-compatible Telea behavior, glTF channel packing, embedded PNG reload |
+| Existing-mesh texturing | Native end-to-end | Default 12 steps, real mesh/image/checkpoints, 223,711 faces preserved, two 2048 textures, GLB reload |
+| Image-to-PBR generation | Implemented, acceptance running | Complete coordinator reached every stage in one-step smoke; default-step artifact is required for promotion |
+| 512 image-to-3D oracle | Torch/MPS end-to-end | Default 12 steps, reloadable 61 MB GLB |
+| 1024 cascade oracle | Torch/MPS end-to-end | Default 12 steps, reloadable 272.8 MB GLB, 15.28 GB maximum RSS, zero swaps |
 
-## What The Reference Run Does
+The complete native conformance command passed 93 tests in 13 suites before the
+mesh-to-encoder test was added. The new handoff test then passed independently
+under Metal API validation. The final report will replace this split record with
+one current full-suite count.
 
-```mermaid
-flowchart LR
-    I["Image"] --> D["DINOv3"]
-    D --> SS["Sparse structure"]
-    SS --> SF["Shape flow"]
-    SF --> TF["Texture flow"]
-    TF --> SD["Shape decoder"]
-    SD --> TD["Texture decoder"]
-    TD --> G["Mesh and material export"]
+## Native Existing-Mesh Artifact Record
+
+Acceptance input:
+
+```text
+mesh  = upstream assets/example_texturing/the_forgotten_knight.ply
+image = docs/assets/trellis2-input-t.png
+steps = 12
+texture = 2048 x 2048
+seed = 42 using native SplitMix64 + Box-Muller
+uv policy = regenerate with topology-safe fallback
 ```
 
-For 512 inference the exact semantic order is:
+Observed on Apple M3 Pro under Metal API validation:
 
-1. Resize and normalize the image, then produce 1,029 DINO tokens of width
-   1,024.
-2. Sample an 8-channel 16-cubed sparse-structure volume.
-3. Decode occupancy and derive the dynamic sparse coordinates at resolution
-   32.
-4. Sample 32-channel shape latents on those coordinates.
-5. Sample 32-channel texture latents while the topology is still compact.
-6. Decode shape through four subdivision levels up to resolution 512.
-7. Decode six PBR channels: RGB base color, metallic, roughness, and alpha.
-8. Extract geometry, prepare UVs, sample PBR attributes, and package GLB.
+| Evidence | Value |
+| --- | ---: |
+| Wall time | 202.92 s |
+| Maximum RSS | 3,042,181,120 bytes |
+| Peak memory footprint reported by `/usr/bin/time -l` | 7,477,478,456 bytes |
+| Swaps | 0 |
+| Source vertices / faces | 153,723 / 223,711 |
+| GLB accessor vertices / faces | 671,133 / 223,711 |
+| Assimp imported faces | 223,711 |
+| Embedded textures | 2 |
+| Texture size | 2048 x 2048 |
+| Covered texels | 2,959,061 |
+| GLB bytes | 36,571,340 |
+| GLB SHA-256 | `37ad68cca494628cf29dafdfa1989200dd448048af9346dbe4b126ec710083c3` |
 
-Texture sampling intentionally happens before the large shape decode. Keeping
-millions of decoded geometry elements alive beside another 2.58 GB flow model
-would defeat the memory plan.
+The GLB has more accessor vertices because the deterministic fallback gives
+each triangle its own UV island. Assimp may merge identical imported vertices;
+the invariant that matters here is that every valid source face survives.
 
-## Why A 4B Model Needs More Than Weight Bytes
+Stage evidence recorded zero live arena bytes after every close. The largest
+stage peaks were 937,105,448 bytes for the shape encoder and 849,578,732 bytes
+for the texture decoder. The process-level footprint is larger than RSS because
+macOS reports several unified-memory views; neither number should be confused
+with the sum of every declared arena capacity.
 
-Four billion parameters describe model capacity, not peak process memory.
-Depending on dtype, the selected checkpoints contribute many gigabytes, but
-the process also needs image conditioning, activations, attention workspace,
-sparse coordinate maps, decoder topology, allocator bookkeeping, mesh copies,
-UV charts, raster targets, and textures. macOS shares the same physical memory.
+## Numerical Drift And Semantic Differences
 
-The working reference runtime handles that with whole-stage lifetimes:
+| Difference | Impact | Current contract |
+| --- | --- | --- |
+| Native RNG vs PyTorch RNG | Same numeric seed does not produce the upstream noise stream | `--seed` is stable native reproducibility; oracle fixtures inject captured upstream values |
+| BF16 reduction order | Small per-call differences feed back through later denoising calls | Teacher-forced conformance and free-running structural IoU are reported separately |
+| Apple Vision vs RMBG | Foreground matte can differ around hair, transparency, or ambiguous backgrounds | Alpha input can be required; Vision is the documented native portability policy |
+| Model I/O/per-face atlas vs CuMesh | Seams and texel efficiency differ | Never lose topology; record implementation and UV fingerprint; CuMesh parity remains a quality gate |
+| Supplied UV preservation | Useful extension differs from pinned upstream default regeneration | `regenerate` is the closer parity policy; preservation is explicitly user-selected |
+| Metal UV raster vs nvdiffrast | Edge coverage and interpolation can differ | Analytic Metal contracts pass; representative CUDA golden coverage remains open |
+| Native triangle/quad hole fill vs Trimesh | Larger or complex boundary loops may differ | Pinned upstream call-site behavior is covered for its supported small loops |
 
-```mermaid
-flowchart LR
-    A["Map or load one stage"] --> B["Run every use"]
-    B --> C["Synchronize"]
-    C --> D["Release weights and scratch"]
-    D --> E["Carry only semantic output"]
-```
+For the sparse structure trajectory, captured identical upstream inputs at
+early, middle, and late calls stay below `0.01376` normalized RMS. Feeding the
+native BF16 outputs back through all 22 calls ends at `0.7208` occupancy IoU.
+This is accepted as structural stability for continued port work, not described
+as exact same-seed parity.
 
-The native runtime goes further by mapping the verified checkpoint into a
-no-copy `MTLBuffer` and routing flow/sampler temporaries through a heap-backed
-Metal arena. The arena refuses overflow and reports current, peak, and
-cumulative requested bytes separately. `StageSession` now drains the queue,
-requires zero live arena bytes, destroys the arena, observes the checkpoint's
-`munmap`, and carries only a standalone output into the next stage. This work
-borrows its discipline from
-[`drumih/turbo-fieldfare`](https://github.com/drumih/turbo-fieldfare/tree/1859181ae26eb39c9698437f806be62adc01367c),
-but not its expert cache: TRELLIS stages are dense and reuse every block at
-every denoising step, so per-layer SSD streaming would reread almost the whole
-stage repeatedly.
+## Benchmark Boundaries
 
-## Native Vertical Slice
+The dense benchmark compares the original tiled BF16 projection with the
+optional SIMD-group matrix path. It correctness-gates both implementations,
+warms up, synchronizes every measurement, and counterbalances order. Existing
+M3 Pro measurements showed wins on representative multi-row projections and a
+loss on one-row conditioning, so dispatch keeps rows below eight on the tiled
+path.
 
-The first real TRELLIS layer can be verified without Python or Torch:
+The PBR benchmark is named `kg-trellis2-pbr-bake-bench` on purpose. It measures
+Metal UV rasterization plus sparse trilinear sampling over an analytic dense
+field. It excludes shader compilation, decoded-field upload, CPU packing,
+Telea passes, PNG/GLB encoding, filesystem output, and validation. It is useful
+for regression work, not a full-PBR or representative-model speed claim.
+
+No performance number becomes a repository claim until its command, device,
+OS, workload, warmup, iterations, synchronization, timing boundary, raw samples,
+and correctness hash are disclosed.
+
+## Reproduce The Native Ladder
 
 ```sh
-swift run -c release kg-trellis2 \
-  verify-slat-input-layer /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors
+./kg doctor
+./kg validate
+
+# Build only. No weights or oracle environment.
+./kg model native-setup trellis2
+
+# Install pinned native weights, reusing verified HF cache entries.
+./kg model setup trellis2 --feature all
+
+# Full real-checkpoint component/stage conformance.
+./kg model test trellis2
+
+# Binary dependency audit and benchmarks.
+./kg model native-audit trellis2
+./kg model native-benchmark trellis2
+./kg model native-pbr-benchmark trellis2
 ```
 
-The command hashes the exact memory mapping that Metal will read and requires SHA-256
-`ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f`.
-It then validates all 640 tensor ranges, maps 2,584,576,000 page-rounded bytes,
-and runs the actual BF16 `input_layer.weight [1536,32]` and bias for 17 rows.
-No heap-sized weight copy is created. On the Apple M3 Pro, all F32 values
-matched the CPU calculation and all 26,112 BF16 outputs matched bit-for-bit.
+The direct release CLI also supports `install`, `generate`, `texture`,
+`verify-glb`, checkpoint inspection, and focused real-layer verification.
 
-The same CLI verifies DINOv3's real `layer.0.attention.q_proj` only after
-authenticating its pinned SHA-256.
-
-The complete 512 conditioner now goes much further. Native Swift constructs
-the CLS and four register tokens, and Metal executes patch embedding, dynamic
-two-dimensional RoPE, all 24 attention and MLP blocks, LayerScale residuals,
-and TRELLIS's parameter-free final LayerNorm. The production geometry is
-`1,029 x 1,024`, not a reduced toy token count. Against a full F32 oracle from
-the pinned upstream implementation, the native result has maximum absolute
-error `5.2928925e-5` and RMS error `1.9124438e-6` over every output value.
-
-On the Apple M3 Pro verification host, the stage's measured model time was
-2.23 seconds and its heap-backed arena peaked at 75,866,112 bytes. This timing
-starts from an already normalized NCHW tensor and already mapped checkpoint;
-it does not include image decoding, alpha-aware cropping, Lanczos resizing, or
-checkpoint mapping. Those operations are deliberately still listed as open
-instead of being hidden inside the model number.
-
-The next conditioning slice is also native:
+## Optional Oracle Ladder
 
 ```sh
-swift run -c release kg-trellis2 \
-  verify-slat-conditioning /path/to/slat_flow_img2shape_dit_1_3B_512_bf16.safetensors
+./kg model oracle-setup trellis2
+./kg model oracle-test trellis2
+
+./kg model oracle-run trellis2 \
+  --pipeline-type 1024_cascade \
+  --input image.png \
+  --output build/trellis2/oracle-1024
 ```
 
-It runs the exact 256-channel timestep sinusoid, two real checkpoint linear
-layers with SiLU, and the shared adaLN projection to 9,216 channels. At
-timestep `650.25`, maximum F32 error was `4.77e-6` and the BF16-cast output was
-bit-exact against the CPU oracle.
+Oracle fixture exporters pin source paths and hashes, require
+`PYTORCH_ENABLE_MPS_FALLBACK=0` where applicable, and write immutable payloads
+under `Tests/KernelGoblinTrellis2Tests/Fixtures/`. Native tests authenticate the
+fixture before comparing it.
 
-## Reference Artifacts
+## Remaining Acceptance Gates
 
-### 512 Default, 12 Steps
+1. Complete, reload, and record the default 12-step native 512 image-to-PBR GLB.
+2. Render native artifacts from multiple views and compare silhouette,
+   topology, texture, and material behavior with the pinned oracle.
+3. Add representative model-derived PBR bake benchmarks before publishing bake
+   performance as anything beyond an analytic microbenchmark.
+4. Improve UV chart quality toward the pinned CuMesh behavior without relaxing
+   the exact face-preservation gate.
+5. Profile the accepted end-to-end graph, then optimize the production sparse
+   kernels that dominate wall time.
 
-| Field | Value |
-| --- | --- |
-| Input SHA-256 | `db468bad8a04f1474a8d68140c07501b013b3ec6124b911fb7852675d64c05ee` |
-| Output SHA-256 | `12fc1446c0f0472874588b381643e351960163a6ded98fd43878a4fcffce3c31` |
-| Geometry | 1,479,568 vertices; 3,111,374 faces |
-| GLB size | 61,010,596 bytes |
-| Runtime | 880.588 seconds, including streamed loading |
-
-### 1024 Cascade Default, 12 Steps
-
-| Field | Value |
-| --- | --- |
-| Input SHA-256 | `db468bad8a04f1474a8d68140c07501b013b3ec6124b911fb7852675d64c05ee` |
-| Output SHA-256 | `e970affbd104decf77289bfacde745c96ce8961e6e7b57874f07a6b2d423792a` |
-| Geometry | 6,717,817 vertices; 13,774,312 faces |
-| GLB size | 272,777,844 bytes |
-| Runtime | 3,078.152 seconds |
-| Maximum RSS | 15,275,048,960 bytes |
-| Process swaps | 0 |
-
-![Verified 1024-cascade vertex-color preview](assets/trellis2-1024-cascade-preview.png)
-
-The preview is derived from the validated GLB's vertices and predicted RGBA
-values. It is not presented as an upstream CUDA PBR render.
-
-## PBR And Existing-Mesh Texturing
-
-We are not stopping at vertex colors. The **reference port** now has xatlas
-unwrap, sparse half-voxel sampling, inpainting, glTF base-color and
-metallic-roughness packing, closest-surface projection, and a staged
-existing-mesh texturing command. Separately, KernelGoblin has a verified Metal
-UV-raster kernel. These pieces are not yet assembled into the shipping Swift
-package, so they are not presented as a native PBR pipeline.
-
-The missing word is **parity**. Upstream performs CuMesh cleanup, repeated
-simplification, component and orientation handling, its own unwrap semantics,
-and nvdiffrast coverage. The portable reference currently substitutes
-fast-simplification and xatlas. Before the PBR path becomes verified and
-default, fixtures must cover topology, normals before seam duplication,
-double-sided policy, overlap ownership, projection, and material channels
-against pinned upstream outputs.
-
-## Next Acceptance Gates
-
-1. Reproduce alpha-aware crop, Lanczos resize, RGB conversion, and ImageNet
-   normalization in the native image loader.
-2. Carry the verified production 32-grid coordinates through a full native
-   12-step shape flow, complete shape decoder, and flexible dual-grid mesh
-   extraction.
-3. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.
-4. Run existing-mesh texturing end to end. Upstream parity regenerates UVs;
-   preserving supplied UVs remains an explicit KernelGoblin extension.
-5. Continue optimizing measured dense and attention bottlenecks without
-   weakening the teacher-forced conformance gates.
-
-For the production package and memory contracts, continue with
+The durable architecture and installer rationale live in
 [`NATIVE_TRELLIS2_ARCHITECTURE.md`](NATIVE_TRELLIS2_ARCHITECTURE.md).

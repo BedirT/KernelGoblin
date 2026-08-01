@@ -3,8 +3,9 @@
 This directory is the pinned **reference and conformance runtime** for the
 native Swift + Metal TRELLIS.2 port. It uses Python, Torch, and MPS on purpose:
 we need a working upstream-shaped graph that can produce checkpoints,
-intermediate fixtures, and end-to-end artifacts while the no-Torch runtime is
-built one verified slice at a time.
+intermediate fixtures, and end-to-end artifacts for the no-Torch runtime. The
+native graph now exists; this directory remains because independent oracles are
+still how we catch semantic drift.
 
 It is not the intended shipping runtime. Native code lives under
 `Sources/KernelGoblinTrellis2/`; the architecture boundary is documented in
@@ -14,7 +15,7 @@ It is not the intended shipping runtime. Native code lives under
 | --- | --- | --- |
 | `512` image-to-3D | Verified, default 12 steps | Complete pinned graph, finite geometry, reloadable vertex-color GLB |
 | `1024_cascade` image-to-3D | Verified, default 12 steps | Stage-wise memory fit at 15.28 GB maximum RSS |
-| Experimental PBR bake | Component tests pass | Metal raster, xatlas, sparse sampling, material packing, GLB reload; upstream mesh parity pending |
+| Experimental PBR bake | Reference component tests pass | xatlas, sparse sampling, material packing, GLB reload; upstream mesh parity pending |
 | Existing-mesh texturing | Orchestration implemented | Full reference execution and artifact evidence pending |
 | `1024` and `1536_cascade` | Experimental | No default-step end-to-end claim |
 
@@ -25,12 +26,12 @@ You need Apple Silicon, Python 3.11, and
 `build/trellis2/`; nothing is added to the global Python environment.
 
 ```sh
-./kg model setup trellis2
-./kg model test trellis2
+./kg model oracle-setup trellis2
+./kg model oracle-test trellis2
 ```
 
-`model test` runs the compatibility and primitive suite. It is not a full
-generation. The stronger model gate is an explicit `model run` with the
+`oracle-test` runs the compatibility and primitive suite. It is not a full
+generation. The stronger model gate is an explicit `oracle-run` with the
 default 12 sampling steps and a validated output artifact.
 
 Setup clones TRELLIS.2 revision
@@ -61,11 +62,11 @@ pinned configuration.
 ## Run The Proven Reference Paths
 
 ```sh
-./kg model run trellis2 \
+./kg model oracle-run trellis2 \
   --input image.png \
   --output build/trellis2/output-512
 
-./kg model run trellis2 \
+./kg model oracle-run trellis2 \
   --pipeline-type 1024_cascade \
   --input image.png \
   --output build/trellis2/output-1024
@@ -75,7 +76,7 @@ These default commands retain the previously verified vertex-color export.
 Run the portable material path only through its explicit experimental gate:
 
 ```sh
-./kg model run trellis2 --experimental-pbr \
+./kg model oracle-run trellis2 --experimental-pbr \
   --input image.png --output build/trellis2/output-pbr
 ```
 
