@@ -131,6 +131,7 @@ CMake 3.25+, and Ninja.
 ```sh
 ./kg doctor
 ./kg list
+./kg model list
 ./kg validate
 ```
 
@@ -281,6 +282,11 @@ Each kernel is independently selectable. `./kg setup trellis2/z_order` should
 not install a model, and adding a future CUDA optimization should not make an
 Apple user build it. The checked-in `$port-gpu-kernel` skill and `AGENTS.md`
 give Codex the same verification rules we use manually.
+
+Full-model runtimes follow the same idea at a higher level: each
+`ports/<model>/model.toml` registers the runtime and names its thin adapter in
+`kg`. The manifest owns provenance and policy; the adapter owns the commands
+that are inherently model-specific.
 
 `kernel.toml` is the registration boundary. A new kernel brings its own
 `CMakeLists.txt`, tests, and benchmark; root CMake and CI discover it without a

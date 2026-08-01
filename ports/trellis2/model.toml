@@ -1,6 +1,7 @@
 id = "trellis2"
 model = "microsoft/TRELLIS.2"
 description = "Native Swift and Metal image-to-3D and existing-mesh texturing runtime"
+adapter = "trellis2"
 production_runtime = "swift-metal"
 oracle_runtime = "python-torch-mps"
 platforms = ["macos-arm64"]

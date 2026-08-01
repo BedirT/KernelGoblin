@@ -16,6 +16,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SUPPORTED_MODEL_ADAPTERS = {"trellis2"}
 TRELLIS_NATIVE_ROOTS = {
     "Sources/KernelGoblinTrellis2",
     "Sources/KernelGoblinTrellis2CLI",
@@ -71,6 +72,47 @@ def manifests() -> dict[str, dict]:
     if errors:
         raise SystemExit("\n".join(f"ERROR: {error}" for error in errors))
     return found
+
+
+def model_manifest_inventory() -> tuple[dict[str, dict], list[str]]:
+    found: dict[str, dict] = {}
+    errors: list[str] = []
+    for path in sorted((ROOT / "ports").glob("*/model.toml")):
+        with path.open("rb") as stream:
+            manifest = tomllib.load(stream)
+        manifest["_path"] = path
+        model_id = manifest.get("id")
+        if not model_id:
+            errors.append(f"{path}: missing id")
+        elif model_id in found:
+            errors.append(
+                f"{path}: duplicate model id {model_id!r}; first declared by "
+                f"{found[model_id]['_path']}"
+            )
+        else:
+            found[model_id] = manifest
+    return found, errors
+
+
+def model_manifests() -> dict[str, dict]:
+    found, errors = model_manifest_inventory()
+    if errors:
+        raise SystemExit("\n".join(f"ERROR: {error}" for error in errors))
+    return found
+
+
+def require_model(model_id: str, adapter: str = "trellis2") -> dict:
+    available = model_manifests()
+    manifest = available.get(model_id)
+    if manifest is None:
+        choices = ", ".join(available) or "none"
+        raise SystemExit(f"unknown model runtime {model_id!r}; available: {choices}")
+    if manifest.get("adapter") != adapter:
+        raise SystemExit(
+            f"model {model_id!r} uses adapter {manifest.get('adapter', 'none')!r}; "
+            f"this command requires {adapter!r}"
+        )
+    return manifest
 
 
 def kernel(value: str) -> dict:
@@ -186,6 +228,14 @@ def command_list(args: argparse.Namespace) -> None:
         print(f"{item['id']:<24} {backends:<16} {item['description']}")
 
 
+def command_model_list(_: argparse.Namespace) -> None:
+    for item in model_manifests().values():
+        print(
+            f"{item['id']:<16} {item['production_runtime']:<16} "
+            f"{item['description']}"
+        )
+
+
 def command_doctor(_: argparse.Namespace) -> None:
     checks = {
         "system": f"{platform.system()} {platform.machine()}",
@@ -216,6 +266,8 @@ def command_doctor(_: argparse.Namespace) -> None:
 
 def command_validate(_: argparse.Namespace) -> None:
     available, errors = manifest_inventory()
+    models, model_errors = model_manifest_inventory()
+    errors.extend(model_errors)
     full_sha = re.compile(r"^[0-9a-f]{40}$")
 
     if not available:
@@ -245,18 +297,19 @@ def command_validate(_: argparse.Namespace) -> None:
         if not (item["_path"].parent / "README.md").is_file():
             errors.append(f"{item['_path'].parent}: missing README.md")
 
-    for path in sorted((ROOT / "ports").glob("*/model.toml")):
-        with path.open("rb") as stream:
-            model = tomllib.load(stream)
+    for model in models.values():
+        path = model["_path"]
         expected_id = path.parent.name
         for field in (
-            "id", "model", "description", "production_runtime",
+            "id", "model", "description", "adapter", "production_runtime",
             "oracle_runtime", "platforms",
         ):
             if not model.get(field):
                 errors.append(f"{path}: missing {field}")
         if model.get("id") != expected_id:
             errors.append(f"{path}: id must match directory {expected_id!r}")
+        if model.get("adapter") not in SUPPORTED_MODEL_ADAPTERS:
+            errors.append(f"{path}: unsupported model adapter {model.get('adapter')!r}")
         source = model.get("source", {})
         for field in ("repository", "revision", "license"):
             if not source.get(field):
@@ -356,8 +409,7 @@ def trellis_python() -> Path:
 
 
 def command_model_oracle_setup(args: argparse.Namespace) -> None:
-    if args.model != "trellis2":
-        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    require_model(args.model)
     run([sys.executable, str(ROOT / "ports" / "trellis2" / "setup_runtime.py")])
 
 
@@ -381,8 +433,7 @@ def first_checkpoint(*candidates: Path) -> Path:
 
 
 def command_model_setup(args: argparse.Namespace) -> None:
-    if args.model != "trellis2":
-        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    require_model(args.model)
     command = [str(native_trellis_executable()), "install"]
     if getattr(args, "root", None):
         command.extend(["--root", args.root])
@@ -392,14 +443,12 @@ def command_model_setup(args: argparse.Namespace) -> None:
 
 
 def command_model_native_setup(args: argparse.Namespace) -> None:
-    if args.model != "trellis2":
-        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    require_model(args.model)
     run(["swift", "build", "-c", "release", "--product", "kg-trellis2"])
 
 
 def command_model_native_test(args: argparse.Namespace) -> None:
-    if args.model != "trellis2":
-        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    require_model(args.model)
     install_root = native_trellis_install_root(args.checkpoint_root)
     hub = Path.home() / ".cache" / "huggingface" / "hub"
     trellis_cache = (
@@ -519,8 +568,7 @@ def command_model_native_test(args: argparse.Namespace) -> None:
 
 
 def command_model_native_audit(args: argparse.Namespace) -> None:
-    if args.model != "trellis2":
-        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    require_model(args.model)
     if platform.system() != "Darwin":
         raise SystemExit("native TRELLIS.2 binary audit requires macOS")
 
@@ -601,8 +649,7 @@ def command_model_test(args: argparse.Namespace) -> None:
 
 
 def command_model_native_benchmark(args: argparse.Namespace) -> None:
-    if args.model != "trellis2":
-        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    require_model(args.model)
     run([
         "swift", "run", "-c", "release", "kg-trellis2-dense-bench",
         "--warmup", str(args.warmup), "--iterations", str(args.iterations),
@@ -634,8 +681,7 @@ def print_native_benchmark_environment() -> None:
 
 
 def command_model_native_pbr_benchmark(args: argparse.Namespace) -> None:
-    if args.model != "trellis2":
-        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    require_model(args.model)
     print_native_benchmark_environment()
     run([
         "swift", "run", "-c", "release", "kg-trellis2-pbr-bake-bench",
@@ -646,8 +692,7 @@ def command_model_native_pbr_benchmark(args: argparse.Namespace) -> None:
 
 
 def command_model_oracle_run(args: argparse.Namespace) -> None:
-    if args.model != "trellis2":
-        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    require_model(args.model)
     if not trellis_python().is_file():
         command_model_oracle_setup(args)
     command = [
@@ -670,8 +715,7 @@ def command_model_oracle_run(args: argparse.Namespace) -> None:
 
 
 def command_model_run(args: argparse.Namespace) -> None:
-    if args.model != "trellis2":
-        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    require_model(args.model)
     if args.pipeline_type != "512":
         raise SystemExit(
             "the native production coordinator currently accepts --pipeline-type 512; "
@@ -699,8 +743,7 @@ def command_model_run(args: argparse.Namespace) -> None:
 
 
 def command_model_oracle_texture(args: argparse.Namespace) -> None:
-    if args.model != "trellis2":
-        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    require_model(args.model)
     if not trellis_python().is_file():
         command_model_oracle_setup(args)
     command = [
@@ -716,8 +759,7 @@ def command_model_oracle_texture(args: argparse.Namespace) -> None:
 
 
 def command_model_texture(args: argparse.Namespace) -> None:
-    if args.model != "trellis2":
-        raise SystemExit(f"unknown model runtime {args.model!r}; available: trellis2")
+    require_model(args.model)
     if args.resolution != 512:
         raise SystemExit(
             "the native existing-mesh coordinator currently accepts --resolution 512"
@@ -760,6 +802,9 @@ def parser() -> argparse.ArgumentParser:
         sub.set_defaults(func=function)
     model = commands.add_parser("model", help="set up, test, or run a full model runtime")
     model_commands = model.add_subparsers(dest="model_command", required=True)
+    model_commands.add_parser("list", help="list registered model runtimes").set_defaults(
+        func=command_model_list
+    )
     for name, help_text, function in (
         ("setup", "install the native Swift/Metal runtime and pinned weights", command_model_setup),
         ("test", "run native Swift/Metal conformance tests", command_model_test),
