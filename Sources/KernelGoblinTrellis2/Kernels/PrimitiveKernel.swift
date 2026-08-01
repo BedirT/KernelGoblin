@@ -30,6 +30,7 @@ public final class PrimitiveKernel: @unchecked Sendable {
     private struct AddCheckpointBF16Parameters {
         var offset: UInt64
         var count: UInt32
+        var reserved: UInt32 = 0
     }
 
     private struct LayerScaleResidualF32Parameters {
