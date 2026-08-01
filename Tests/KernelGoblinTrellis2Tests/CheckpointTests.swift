@@ -1803,6 +1803,7 @@ struct CheckpointTests {
             negativeConditioning: negativeBuffer,
             tokens: tokens, conditioningTokens: conditioningTokens,
             parameters: .shape512(steps: 2),
+            cacheCrossKV: true,
             modelTrace: { call, _, values in
                 #expect(call == modelTrace.count)
                 modelTrace.append(values)
@@ -1813,6 +1814,7 @@ struct CheckpointTests {
             }
         )
         #expect(result.modelCallCount == 4)
+        #expect(result.crossKVCacheStats == SLatCrossKVCacheStats(hits: 60, misses: 60))
         let memory = try session.close()
         #expect(memory.usedBytes == 0)
         #expect(memory.peakUsedBytes < memory.capacityBytes)
@@ -1821,6 +1823,43 @@ struct CheckpointTests {
             "shape sampler arena: peak=\(memory.peakUsedBytes) " +
             "live=\(memory.usedBytes) allocations=\(memory.allocationCount)"
         )
+
+        let uncachedSession = try StageSession(
+            checkpointURL: URL(fileURLWithPath: path),
+            expectedCheckpointSHA256:
+                "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f",
+            arenaCapacity: 16 * 1024 * 1024
+        )
+        let uncachedNoise = try #require(uncachedSession.device.makeBuffer(
+            bytes: &noise, length: noise.count * 4, options: .storageModeShared
+        ))
+        let uncachedPositive = try #require(uncachedSession.device.makeBuffer(
+            bytes: &positiveConditioning, length: positiveConditioning.count * 4,
+            options: .storageModeShared
+        ))
+        let uncachedNegative = try #require(uncachedSession.device.makeBuffer(
+            bytes: &negativeConditioning, length: negativeConditioning.count * 4,
+            options: .storageModeShared
+        ))
+        let uncachedCoordinates = try #require(uncachedSession.device.makeBuffer(
+            bytes: &coordinates, length: coordinates.count * 4,
+            options: .storageModeShared
+        ))
+        let uncached = try uncachedSession.sampleShapeF32(
+            noise: uncachedNoise, coordinates: uncachedCoordinates,
+            positiveConditioning: uncachedPositive,
+            negativeConditioning: uncachedNegative,
+            tokens: tokens, conditioningTokens: conditioningTokens,
+            parameters: .shape512(steps: 2), cacheCrossKV: false
+        )
+        #expect(uncached.crossKVCacheStats == SLatCrossKVCacheStats(hits: 0, misses: 0))
+        let cachedPointer = result.latent.contents().assumingMemoryBound(to: Float.self)
+        let uncachedPointer = uncached.latent.contents().assumingMemoryBound(to: Float.self)
+        let cachedValues = (0..<noise.count).map { cachedPointer[$0] }
+        let uncachedValues = (0..<noise.count).map { uncachedPointer[$0] }
+        #expect(cachedValues == uncachedValues)
+        let uncachedMemory = try uncachedSession.close()
+        #expect(uncachedMemory.usedBytes == 0)
 
         let fixtureURL = try #require(Bundle.module.url(
             forResource: "slat-shape-sampler-2step", withExtension: "f32",
@@ -2529,7 +2568,7 @@ struct CheckpointTests {
             checkpointURL: URL(fileURLWithPath: path),
             expectedCheckpointSHA256:
                 "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6",
-            arenaCapacity: 768 * 1024 * 1024,
+            arenaCapacity: 1536 * 1024 * 1024,
             lifecycleObserver: { lifecycle.append($0) }
         )
         let noiseBuffer = try #require(session.device.makeBuffer(
@@ -2549,6 +2588,7 @@ struct CheckpointTests {
             negativeConditioning: negativeBuffer,
             conditioningTokens: contextTokens,
             parameters: .sparseStructure512(steps: 1),
+            cacheCrossKV: true,
             modelTrace: { call, pass, values in
                 #expect(call == traces.count)
                 #expect(pass == (call == 0 ? .positive : .negative))
@@ -2557,12 +2597,13 @@ struct CheckpointTests {
         )
         let elapsed = started.duration(to: .now)
         #expect(result.modelCallCount == 2)
+        #expect(result.crossKVCacheStats == SLatCrossKVCacheStats(hits: 0, misses: 60))
         try #require(traces.count == 2)
         let memory = try session.close()
         #expect(memory.usedBytes == 0)
-        // The measured M3 Pro peak is 550,400,008 bytes. Keep roughly 14%
-        // alignment/device headroom without allowing growth to the arena cap.
-        #expect(memory.peakUsedBytes <= 600 * 1024 * 1024)
+        // Exact positive and negative cross-K/V caches intentionally trade
+        // memory for avoiding invariant work across sampler calls.
+        #expect(memory.peakUsedBytes <= 1400 * 1024 * 1024)
         #expect(lifecycle == [.queueDrained, .arenaReleased, .checkpointUnmapped])
 
         for call in 0..<2 {
@@ -2728,12 +2769,15 @@ struct CheckpointTests {
         try #require(expectedLogits.count == 64 * 64 * 64)
         #expect(Array(expectedStates.suffix(latentCount)) == expectedFinal)
 
+        let cacheCrossKV = ProcessInfo.processInfo.environment[
+            "KG_TRELLIS2_ENABLE_CROSS_KV_CACHE"
+        ] == "1"
         var flowLifecycle: [StageLifecycleEvent] = []
         let flowSession = try StageSession(
             checkpointURL: URL(fileURLWithPath: flowPath),
             expectedCheckpointSHA256:
                 "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6",
-            arenaCapacity: 768 * 1024 * 1024,
+            arenaCapacity: (cacheCrossKV ? 1536 : 768) * 1024 * 1024,
             lifecycleObserver: { flowLifecycle.append($0) }
         )
         let noiseBuffer = try #require(flowSession.device.makeBuffer(
@@ -2753,6 +2797,7 @@ struct CheckpointTests {
             negativeConditioning: negativeBuffer,
             conditioningTokens: contextTokens,
             parameters: .sparseStructure512(),
+            cacheCrossKV: cacheCrossKV,
             samplerTrace: { step, state in
                 #expect(step == nativeStates.count)
                 nativeStates.append(state)
@@ -2760,10 +2805,13 @@ struct CheckpointTests {
         )
         let flowElapsed = flowStarted.duration(to: .now)
         #expect(sample.modelCallCount == 22)
+        #expect(sample.crossKVCacheStats == (cacheCrossKV
+            ? SLatCrossKVCacheStats(hits: 600, misses: 60)
+            : SLatCrossKVCacheStats(hits: 0, misses: 0)))
         try #require(nativeStates.count == 12)
         let flowMemory = try flowSession.close()
         #expect(flowMemory.usedBytes == 0)
-        #expect(flowMemory.peakUsedBytes <= 600 * 1024 * 1024)
+        #expect(flowMemory.peakUsedBytes <= (cacheCrossKV ? 1400 : 600) * 1024 * 1024)
         #expect(flowLifecycle == [.queueDrained, .arenaReleased, .checkpointUnmapped])
         for step in 0..<12 {
             let expected = Array(

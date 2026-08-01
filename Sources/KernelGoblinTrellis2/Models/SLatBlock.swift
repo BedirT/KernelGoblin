@@ -30,6 +30,7 @@ public final class SLatBlock: @unchecked Sendable {
             input: input, sharedModulation: sharedModulation, conditioning: conditioning,
             checkpoint: checkpoint, block: block, tokens: tokens,
             conditioningTokens: conditioningTokens, coordinates: coordinates,
+            cachedConditioning: nil,
             trace: nil
         )
     }
@@ -38,6 +39,7 @@ public final class SLatBlock: @unchecked Sendable {
         input: MTLBuffer, sharedModulation: MTLBuffer, conditioning: MTLBuffer,
         checkpoint: MappedCheckpoint, block: Int, tokens: Int,
         conditioningTokens: Int, coordinates: MTLBuffer,
+        cachedConditioning: SLatCachedConditioning? = nil,
         trace: ((String, MTLBuffer) -> Void)?
     ) throws -> MTLBuffer {
         let tensorBytes = try blockBytes(tokens, Self.channels)
@@ -103,7 +105,8 @@ public final class SLatBlock: @unchecked Sendable {
         trace?("norm2", norm2)
         let crossOutput = try crossAttention.forwardF32(
             input: norm2, conditioning: conditioning, checkpoint: checkpoint,
-            block: block, tokens: tokens, conditioningTokens: conditioningTokens
+            block: block, tokens: tokens, conditioningTokens: conditioningTokens,
+            cachedConditioning: cachedConditioning
         )
         trace?("cross_output", crossOutput)
         let afterCross = try makeBuffer(length: tensorBytes, label: "SLat cross residual")
@@ -143,6 +146,10 @@ public final class SLatBlock: @unchecked Sendable {
         try primitives.roundBF16F32(input: output, count: tensorElements, output: output)
         trace?("output", output)
         return output
+    }
+
+    public var crossKVCacheStats: SLatCrossKVCacheStats {
+        crossAttention.cacheStats
     }
 
     private func makeBuffer(length: Int, label: String) throws -> MTLBuffer {

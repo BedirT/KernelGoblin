@@ -33,6 +33,7 @@ public enum StageSessionError: Error, CustomStringConvertible, Equatable {
 public struct StageSample: @unchecked Sendable {
     public let latent: MTLBuffer
     public let modelCallCount: Int
+    public let crossKVCacheStats: SLatCrossKVCacheStats
 }
 
 public struct StageConditioning: @unchecked Sendable {
@@ -194,6 +195,7 @@ public final class StageSession {
         tokens: Int,
         conditioningTokens: Int,
         parameters: FlowEulerParameters,
+        cacheCrossKV: Bool = false,
         modelTrace: ShapeStageModelTrace? = nil,
         samplerTrace: StageSamplerTrace? = nil
     ) throws -> StageSample {
@@ -209,6 +211,7 @@ public final class StageSession {
                 tokens: tokens,
                 conditioningTokens: conditioningTokens,
                 parameters: parameters,
+                cacheCrossKV: cacheCrossKV,
                 modelTrace: { call, pass, output in
                     modelTrace?(call, pass, Self.values(output, count: elementCount))
                 },
@@ -222,7 +225,8 @@ public final class StageSession {
                     byteCount: try stageByteCount(tokens, 32),
                     label: "Shape stage standalone latent"
                 ),
-                modelCallCount: result.modelCallCount
+                modelCallCount: result.modelCallCount,
+                crossKVCacheStats: result.crossKVCacheStats
             )
         }
     }
@@ -233,6 +237,7 @@ public final class StageSession {
         negativeConditioning: MTLBuffer,
         conditioningTokens: Int,
         parameters: FlowEulerParameters,
+        cacheCrossKV: Bool = false,
         modelTrace: ShapeStageModelTrace? = nil,
         samplerTrace: StageSamplerTrace? = nil
     ) throws -> StageSample {
@@ -265,6 +270,7 @@ public final class StageSession {
                 negativeConditioning: negativeConditioning,
                 checkpoint: checkpoint, conditioningTokens: conditioningTokens,
                 parameters: parameters,
+                cacheCrossKV: cacheCrossKV,
                 modelTrace: { call, pass, output in
                     modelTrace?(call, pass, Self.values(output, count: elementCount))
                 },
@@ -278,7 +284,8 @@ public final class StageSession {
                     byteCount: try stageByteCount(tokens, 8),
                     label: "Sparse-structure standalone latent"
                 ),
-                modelCallCount: result.modelCallCount
+                modelCallCount: result.modelCallCount,
+                crossKVCacheStats: result.crossKVCacheStats
             )
         }
     }
@@ -291,6 +298,7 @@ public final class StageSession {
         tokens: Int,
         conditioningTokens: Int,
         parameters: FlowEulerParameters,
+        cacheCrossKV: Bool = false,
         modelTrace: TextureStageModelTrace? = nil,
         samplerTrace: StageSamplerTrace? = nil
     ) throws -> StageSample {
@@ -306,6 +314,7 @@ public final class StageSession {
                 tokens: tokens,
                 conditioningTokens: conditioningTokens,
                 parameters: parameters,
+                cacheCrossKV: cacheCrossKV,
                 modelTrace: { call, output in
                     modelTrace?(call, Self.values(output, count: elementCount))
                 },
@@ -319,7 +328,8 @@ public final class StageSession {
                     byteCount: try stageByteCount(tokens, 32),
                     label: "Texture stage standalone latent"
                 ),
-                modelCallCount: result.modelCallCount
+                modelCallCount: result.modelCallCount,
+                crossKVCacheStats: result.crossKVCacheStats
             )
         }
     }

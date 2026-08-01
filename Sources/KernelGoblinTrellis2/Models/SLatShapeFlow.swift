@@ -51,14 +51,18 @@ public final class SLatFlow: @unchecked Sendable {
         try forwardF32(
             input: input, timestep: timestep, conditioning: conditioning,
             coordinates: coordinates, checkpoint: checkpoint, tokens: tokens,
-            conditioningTokens: conditioningTokens, trace: nil
+            conditioningTokens: conditioningTokens, conditioningIsRounded: false,
+            cachedConditioning: nil,
+            trace: nil
         )
     }
 
     func forwardF32(
         input: MTLBuffer, timestep: MTLBuffer, conditioning: MTLBuffer,
         coordinates: MTLBuffer, checkpoint: MappedCheckpoint, tokens: Int,
-        conditioningTokens: Int, trace: ((Int, MTLBuffer) -> Void)?
+        conditioningTokens: Int, conditioningIsRounded: Bool = false,
+        cachedConditioning: SLatCachedConditioning? = nil,
+        trace: ((Int, MTLBuffer) -> Void)? = nil
     ) throws -> MTLBuffer {
         let inputBytes = try shapeFlowBytes(tokens, configuration.inputChannels)
         let hiddenBytes = try shapeFlowBytes(tokens, Self.modelChannels)
@@ -87,18 +91,24 @@ public final class SLatFlow: @unchecked Sendable {
         try primitives.roundBF16F32(input: hidden, count: hiddenBytes / 4, output: hidden)
 
         let modulation = try makeConditioning(timestep: timestep, checkpoint: checkpoint)
-        let roundedConditioning = try makeBuffer(
-            length: conditioningBytes, label: "shape-flow rounded image conditioning"
-        )
-        try primitives.roundBF16F32(
-            input: conditioning, count: conditioningBytes / 4, output: roundedConditioning
-        )
+        let roundedConditioning: MTLBuffer
+        if conditioningIsRounded {
+            roundedConditioning = conditioning
+        } else {
+            roundedConditioning = try makeBuffer(
+                length: conditioningBytes, label: "shape-flow rounded image conditioning"
+            )
+            try primitives.roundBF16F32(
+                input: conditioning, count: conditioningBytes / 4, output: roundedConditioning
+            )
+        }
         for index in 0..<Self.blockCount {
             hidden = try block.forwardF32(
                 input: hidden, sharedModulation: modulation,
                 conditioning: roundedConditioning, checkpoint: checkpoint,
                 block: index, tokens: tokens, conditioningTokens: conditioningTokens,
-                coordinates: coordinates
+                coordinates: coordinates, cachedConditioning: cachedConditioning,
+                trace: nil
             )
             trace?(index, hidden)
         }
@@ -125,6 +135,10 @@ public final class SLatFlow: @unchecked Sendable {
             outputChannels: configuration.outputChannels, output: output
         )
         return output
+    }
+
+    public var crossKVCacheStats: SLatCrossKVCacheStats {
+        block.crossKVCacheStats
     }
 
     private func makeConditioning(

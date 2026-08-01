@@ -1,4 +1,22 @@
+import Foundation
 import Metal
+
+final class SLatCachedConditioning {
+    let buffer: MTLBuffer
+    let checkpoint: MappedCheckpoint
+    let tokens: Int
+
+    init(buffer: MTLBuffer, checkpoint: MappedCheckpoint, tokens: Int) {
+        self.buffer = buffer
+        self.checkpoint = checkpoint
+        self.tokens = tokens
+    }
+}
+
+public struct SLatCrossKVCacheStats: Sendable, Equatable {
+    public let hits: Int
+    public let misses: Int
+}
 
 public final class SLatCrossAttention: @unchecked Sendable {
     public static let channels = 1536
@@ -11,6 +29,20 @@ public final class SLatCrossAttention: @unchecked Sendable {
     private let primitives: PrimitiveKernel
     private let normalization: NormalizationKernel
     private let attention: AttentionKernel
+    private struct CacheKey: Hashable {
+        let block: Int
+        let conditioning: ObjectIdentifier
+    }
+    private struct CachedKV {
+        // Retaining the sampling-scoped token prevents object-identity reuse.
+        let conditioning: SLatCachedConditioning
+        let normalizedKey: MTLBuffer
+        let value: MTLBuffer
+    }
+    private let cacheLock = NSLock()
+    private var kvCache: [CacheKey: CachedKV] = [:]
+    private var cacheHits = 0
+    private var cacheMisses = 0
 
     public init(context: MetalContext) throws {
         self.context = context
@@ -23,6 +55,18 @@ public final class SLatCrossAttention: @unchecked Sendable {
     public func forwardF32(
         input: MTLBuffer, conditioning: MTLBuffer, checkpoint: MappedCheckpoint,
         block: Int, tokens: Int, conditioningTokens: Int
+    ) throws -> MTLBuffer {
+        try forwardF32(
+            input: input, conditioning: conditioning, checkpoint: checkpoint,
+            block: block, tokens: tokens, conditioningTokens: conditioningTokens,
+            cachedConditioning: nil
+        )
+    }
+
+    func forwardF32(
+        input: MTLBuffer, conditioning: MTLBuffer, checkpoint: MappedCheckpoint,
+        block: Int, tokens: Int, conditioningTokens: Int,
+        cachedConditioning: SLatCachedConditioning?
     ) throws -> MTLBuffer {
         guard block >= 0, tokens > 0, conditioningTokens > 0 else {
             throw NativeRuntimeError.invalidArgument("invalid cross-attention block or token count")
@@ -61,28 +105,61 @@ public final class SLatCrossAttention: @unchecked Sendable {
         try primitives.roundBF16F32(
             input: query, count: queryBytes / 4, output: query
         )
-        let (key, value) = try projectAndSplitKV(
-            conditioning: conditioning, checkpoint: checkpoint,
-            conditioningTokens: conditioningTokens, weight: kvWeight, bias: kvBias,
-            tensorBytes: keyBytes
-        )
         let normalizedQuery = try makeBuffer(length: queryBytes, label: "SLat normalized cross query")
-        let normalizedKey = try makeBuffer(length: keyBytes, label: "SLat normalized cross key")
         try normalization.multiheadRMSNormF32(
             input: query, checkpoint: try checkpoint.acquireBuffer(), gammaOffset: Int(qGamma.fileOffset),
             rows: tokens, heads: Self.heads, dimensions: Self.headDimensions,
             output: normalizedQuery
         )
-        try normalization.multiheadRMSNormF32(
-            input: key, checkpoint: try checkpoint.acquireBuffer(), gammaOffset: Int(kGamma.fileOffset),
-            rows: conditioningTokens, heads: Self.heads, dimensions: Self.headDimensions,
-            output: normalizedKey
-        )
         try primitives.roundBF16F32(input: normalizedQuery, count: queryBytes / 4, output: normalizedQuery)
-        try primitives.roundBF16F32(input: normalizedKey, count: keyBytes / 4, output: normalizedKey)
+        let cached: CachedKV
+        if let cachedConditioning {
+            guard cachedConditioning.checkpoint === checkpoint,
+                  cachedConditioning.tokens == conditioningTokens,
+                  ObjectIdentifier(cachedConditioning.buffer) == ObjectIdentifier(conditioning) else {
+                throw NativeRuntimeError.invalidArgument(
+                    "cross-K/V cache token does not match the flow inputs"
+                )
+            }
+            let cacheKey = CacheKey(
+                block: block, conditioning: ObjectIdentifier(cachedConditioning)
+            )
+            cacheLock.lock()
+            if let existing = kvCache[cacheKey] {
+                cacheHits += 1
+                cacheLock.unlock()
+                cached = existing
+            } else {
+                cacheLock.unlock()
+                let projected = try makeCachedKV(
+                    conditioning: cachedConditioning,
+                    checkpoint: checkpoint, conditioningTokens: conditioningTokens,
+                    weight: kvWeight, bias: kvBias, gamma: kGamma, tensorBytes: keyBytes
+                )
+                cacheLock.lock()
+                if let existing = kvCache[cacheKey] {
+                    cacheHits += 1
+                    cached = existing
+                } else {
+                    cacheMisses += 1
+                    kvCache[cacheKey] = projected
+                    cached = projected
+                }
+                cacheLock.unlock()
+            }
+        } else {
+            let uncachedConditioning = SLatCachedConditioning(
+                buffer: conditioning, checkpoint: checkpoint, tokens: conditioningTokens
+            )
+            cached = try makeCachedKV(
+                conditioning: uncachedConditioning,
+                checkpoint: checkpoint, conditioningTokens: conditioningTokens,
+                weight: kvWeight, bias: kvBias, gamma: kGamma, tensorBytes: keyBytes
+            )
+        }
         let attended = try makeBuffer(length: queryBytes, label: "SLat cross attended values")
         try attention.fusedF32(
-            queries: normalizedQuery, keys: normalizedKey, values: value,
+            queries: normalizedQuery, keys: cached.normalizedKey, values: cached.value,
             queryCount: tokens, keyCount: conditioningTokens, heads: Self.heads,
             dimensions: Self.headDimensions, output: attended
         )
@@ -96,6 +173,40 @@ public final class SLatCrossAttention: @unchecked Sendable {
         )
         try primitives.roundBF16F32(input: output, count: queryBytes / 4, output: output)
         return output
+    }
+
+    public var cacheStats: SLatCrossKVCacheStats {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return SLatCrossKVCacheStats(hits: cacheHits, misses: cacheMisses)
+    }
+
+    private func makeCachedKV(
+        conditioning: SLatCachedConditioning,
+        checkpoint: MappedCheckpoint, conditioningTokens: Int,
+        weight: TensorDescriptor, bias: TensorDescriptor,
+        gamma: TensorDescriptor, tensorBytes: Int
+    ) throws -> CachedKV {
+        let (key, value) = try projectAndSplitKV(
+            conditioning: conditioning.buffer, checkpoint: checkpoint,
+            conditioningTokens: conditioningTokens, weight: weight, bias: bias,
+            tensorBytes: tensorBytes
+        )
+        let normalizedKey = try makeBuffer(
+            length: tensorBytes, label: "SLat normalized cross key cache"
+        )
+        try normalization.multiheadRMSNormF32(
+            input: key, checkpoint: try checkpoint.acquireBuffer(),
+            gammaOffset: Int(gamma.fileOffset), rows: conditioningTokens,
+            heads: Self.heads, dimensions: Self.headDimensions,
+            output: normalizedKey
+        )
+        try primitives.roundBF16F32(
+            input: normalizedKey, count: tensorBytes / 4, output: normalizedKey
+        )
+        return CachedKV(
+            conditioning: conditioning, normalizedKey: normalizedKey, value: value
+        )
     }
 
     private func projectAndSplitKV(

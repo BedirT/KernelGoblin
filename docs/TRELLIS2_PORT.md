@@ -120,7 +120,7 @@ fixtures.
 | Shape SLat flow | Full native stage | Real 2.58 GB checkpoint, all 30 blocks, tiny-graph RMS `0.00615` |
 | Texture SLat flow | Full native stage | Separate real 2.58 GB checkpoint, all 30 blocks, tiny-graph RMS `0.00733` |
 | Euler + CFG | Native orchestration | Exact 12-step schedule, interval CFG/rescale, sequential positive/negative calls, normalization boundaries |
-| Sparse-structure flow | Production native execution | 4,096 tokens, all 22 model calls; teacher probes <= `0.01376` normalized RMS; 555,905,112-byte arena peak |
+| Sparse-structure flow | Native execution; BF16 trajectory gate open | 4,096 tokens and all 22 model calls execute; teacher probes remain <= `0.01376` normalized RMS, but the full feedback trajectory currently misses occupancy IoU/count gates; exact cross-K/V caching was evaluated and left off by default |
 | Sparse occupancy decoder | Full native stage | All 74 tensors, 16-to-64 spatial graph, exact occupancy fixture, normalized RMS `0.000181`, 234,881,024-byte peak |
 | Occupancy extraction | Native Swift | Strict `> 0`, NaN/zero behavior, z-fast ordering, exact 2x pooling |
 | Shape decoder | Full native graph on authenticated small topology | 32 ConvNeXt blocks, four subdivisions, exact coordinates, normalized RMS `0.000628` |

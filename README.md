@@ -256,6 +256,19 @@ dense and touch every block on every denoising step; streaming those same
 weights from SSD twelve times would replace a memory problem with an I/O
 problem.
 
+We also tested the obvious K/V trick instead of assuming it would help. Positive
+and negative cross-attention K/V are timestep-invariant, so an opt-in exact cache
+can remove 600 repeated block projections from the 12-step sparse flow. On M3
+Pro, though, it raised the arena peak from 560 MB to 1.319 GB and changed a
+99.57-second diagnostic run to 99.33 seconds. That is a poor default trade: lots
+of memory, no established end-to-end win. Self-attention K/V cannot be reused
+exactly because the diffusion latent changes at every call. The next useful
+cache work is therefore an explicit approximate mode, measured against geometry
+rather than borrowed image-model quality claims.
+
+The newer cache methods, their tradeoffs, and our implementation order are in
+[`docs/TRELLIS2_CACHE_ACCELERATION.md`](docs/TRELLIS2_CACHE_ACCELERATION.md).
+
 The full rationale is in
 [`docs/NATIVE_TRELLIS2_ARCHITECTURE.md`](docs/NATIVE_TRELLIS2_ARCHITECTURE.md).
 

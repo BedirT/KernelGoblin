@@ -45,3 +45,9 @@ output gates passed:
 
 This is a measured 4.7% sampler improvement. It is worthwhile and more faithful
 to upstream precision, but it does not by itself close the 12-step latency gap.
+
+The warm-build one-step Hisar integration completed in `81.53s`. Sparse flow
+was `10.995s` and shape flow was `12.262s`; that diagnostic included exact
+cross-K/V cache initialization, but one step has no cache hits. The cache was
+later measured over 12 steps and rejected as the default memory/performance
+trade. See `trellis2-cross-kv-cache-m3pro-2026-08-01.md`.
