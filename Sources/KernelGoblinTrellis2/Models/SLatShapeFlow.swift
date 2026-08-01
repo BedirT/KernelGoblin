@@ -71,7 +71,7 @@ public final class SLatFlow: @unchecked Sendable {
         let inputBias = try requireTensor(checkpoint, "input_layer.bias", .bf16, [1536])
         var hidden = try makeBuffer(length: hiddenBytes, label: "shape-flow input projection")
         try dense.linearBF16WeightsF32Output(
-            input: input, checkpoint: checkpoint.buffer,
+            input: input, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(inputWeight.fileOffset), biasOffset: Int(inputBias.fileOffset),
             rows: tokens, inputChannels: configuration.inputChannels,
             outputChannels: Self.modelChannels, output: hidden
@@ -97,7 +97,7 @@ public final class SLatFlow: @unchecked Sendable {
 
         let normalized = try makeBuffer(length: hiddenBytes, label: "shape-flow output norm")
         try normalization.layerNormF32(
-            input: hidden, checkpoint: checkpoint.buffer, rows: tokens,
+            input: hidden, checkpoint: try checkpoint.acquireBuffer(), rows: tokens,
             channels: Self.modelChannels, epsilon: 1e-5, output: normalized
         )
         let outputWeight = try requireTensor(
@@ -107,7 +107,7 @@ public final class SLatFlow: @unchecked Sendable {
         let outputBytes = try shapeFlowBytes(tokens, Self.outputChannels)
         let output = try makeBuffer(length: outputBytes, label: "shape-flow output")
         try dense.linearBF16WeightsF32Output(
-            input: normalized, checkpoint: checkpoint.buffer,
+            input: normalized, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(outputWeight.fileOffset), biasOffset: Int(outputBias.fileOffset),
             rows: tokens, inputChannels: Self.modelChannels,
             outputChannels: Self.outputChannels, output: output
@@ -146,19 +146,19 @@ public final class SLatFlow: @unchecked Sendable {
             timesteps: timestep, rows: 1, dimensions: 256, output: frequency
         )
         try dense.linearBF16WeightsF32Output(
-            input: frequency, checkpoint: checkpoint.buffer,
+            input: frequency, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(firstWeight.fileOffset), biasOffset: Int(firstBias.fileOffset),
             rows: 1, inputChannels: 256, outputChannels: 1536, output: first
         )
         try primitives.siluF32(input: first, count: 1536, output: activated)
         try dense.linearBF16WeightsF32Output(
-            input: activated, checkpoint: checkpoint.buffer,
+            input: activated, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(secondWeight.fileOffset), biasOffset: Int(secondBias.fileOffset),
             rows: 1, inputChannels: 1536, outputChannels: 1536, output: embedding
         )
         try primitives.siluF32(input: embedding, count: 1536, output: modulationInput)
         try dense.linearBF16WeightsF32Output(
-            input: modulationInput, checkpoint: checkpoint.buffer,
+            input: modulationInput, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(modulationWeight.fileOffset),
             biasOffset: Int(modulationBias.fileOffset), rows: 1,
             inputChannels: 1536, outputChannels: 9216, output: modulation

@@ -99,7 +99,7 @@ public final class DINOv3Conditioner: @unchecked Sendable {
             checkpoint, "embeddings.patch_embeddings.bias", shape: [config.hiddenSize]
         )
         try dino.patchEmbedF32(
-            image: image, checkpoint: checkpoint.buffer,
+            image: image, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: try tensorOffset(patchWeight),
             biasOffset: try tensorOffset(patchBias),
             imageHeight: imageHeight, imageWidth: imageWidth,
@@ -126,7 +126,7 @@ public final class DINOv3Conditioner: @unchecked Sendable {
             length: tokenBytes, label: "DINOv3 final parameter-free LayerNorm"
         )
         try normalization.layerNormF32WeightsF32(
-            input: hidden, checkpoint: checkpoint.buffer,
+            input: hidden, checkpoint: try checkpoint.acquireBuffer(),
             rows: tokenCount, channels: config.hiddenSize,
             epsilon: config.layerNormEpsilon, output: output
         )
@@ -154,7 +154,7 @@ public final class DINOv3Conditioner: @unchecked Sendable {
 
         let norm1 = try context.makeBuffer(length: tokenBytes, label: "DINOv3 norm1")
         try normalization.layerNormF32WeightsF32(
-            input: hidden, checkpoint: checkpoint.buffer,
+            input: hidden, checkpoint: try checkpoint.acquireBuffer(),
             rows: tokenCount, channels: config.hiddenSize,
             weightOffset: try offset(checkpoint, "\(prefix).norm1.weight", [config.hiddenSize]),
             biasOffset: try offset(checkpoint, "\(prefix).norm1.bias", [config.hiddenSize]),
@@ -213,7 +213,7 @@ public final class DINOv3Conditioner: @unchecked Sendable {
             length: tokenBytes, label: "DINOv3 attention residual"
         )
         try primitive.layerScaleResidualF32(
-            residual: hidden, branch: projected, checkpoint: checkpoint.buffer,
+            residual: hidden, branch: projected, checkpoint: try checkpoint.acquireBuffer(),
             scaleOffset: try offset(
                 checkpoint, "\(prefix).layer_scale1.lambda1", [config.hiddenSize]
             ),
@@ -222,7 +222,7 @@ public final class DINOv3Conditioner: @unchecked Sendable {
 
         let norm2 = try context.makeBuffer(length: tokenBytes, label: "DINOv3 norm2")
         try normalization.layerNormF32WeightsF32(
-            input: afterAttention, checkpoint: checkpoint.buffer,
+            input: afterAttention, checkpoint: try checkpoint.acquireBuffer(),
             rows: tokenCount, channels: config.hiddenSize,
             weightOffset: try offset(checkpoint, "\(prefix).norm2.weight", [config.hiddenSize]),
             biasOffset: try offset(checkpoint, "\(prefix).norm2.bias", [config.hiddenSize]),
@@ -247,7 +247,7 @@ public final class DINOv3Conditioner: @unchecked Sendable {
         )
         let output = try context.makeBuffer(length: tokenBytes, label: "DINOv3 block output")
         try primitive.layerScaleResidualF32(
-            residual: afterAttention, branch: mlpOutput, checkpoint: checkpoint.buffer,
+            residual: afterAttention, branch: mlpOutput, checkpoint: try checkpoint.acquireBuffer(),
             scaleOffset: try offset(
                 checkpoint, "\(prefix).layer_scale2.lambda1", [config.hiddenSize]
             ),
@@ -270,7 +270,7 @@ public final class DINOv3Conditioner: @unchecked Sendable {
             length: try modelBytes(try modelProduct(rows, outputChannels)), label: label
         )
         try dense.linearF32(
-            input: input, checkpoint: checkpoint.buffer,
+            input: input, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: try offset(
                 checkpoint, "\(name).weight", [outputChannels, inputChannels]
             ),
@@ -301,14 +301,16 @@ public final class DINOv3Conditioner: @unchecked Sendable {
         guard output.length >= prefixBytes else {
             throw NativeRuntimeError.invalidArgument("DINOv3 prefix output is too small")
         }
+        let mappedBuffer = try checkpoint.acquireBuffer()
         output.contents().copyMemory(
-            from: checkpoint.buffer.contents().advanced(by: try tensorOffset(cls)),
+            from: mappedBuffer.contents().advanced(by: try tensorOffset(cls)),
             byteCount: clsBytes
         )
         output.contents().advanced(by: clsBytes).copyMemory(
-            from: checkpoint.buffer.contents().advanced(by: try tensorOffset(registers)),
+            from: mappedBuffer.contents().advanced(by: try tensorOffset(registers)),
             byteCount: registerBytes
         )
+        withExtendedLifetime(mappedBuffer) {}
     }
 
     private func validateCheckpoint(_ checkpoint: MappedCheckpoint) throws {

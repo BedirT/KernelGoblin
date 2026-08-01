@@ -63,6 +63,7 @@ baseline is exactly what the native Metal runtime is here to replace.
 | TRELLIS 30-block texture flow | **Verified native Metal stage** | The separate pinned 2.58 GB texture checkpoint executes all 30 blocks with the real 64-channel noise-plus-shape input; final RMS error is `0.00733` |
 | Flow Euler + CFG orchestration | **Verified native Swift** | Exact 12-step schedule, interval CFG, rescaling, sequential positive/negative calls, shape and texture normalization, and real two-step checkpoint integrations |
 | Bounded Metal allocation | **Verified native foundation** | Heap-backed arena rejects overflow, records cumulative-requested/current/peak bytes, releases dead buffers, and covers both sampler-to-flow integrations |
+| Synchronized stage lifetime | **Verified native foundation** | DINO, shape, and texture sessions drain Metal, reach zero live arena bytes, destroy the arena, observe checkpoint `munmap`, and return standalone outputs |
 | CPU mesh to flexible dual grid | **Verified reference extension** | Pinned O-Voxel algorithm through LibTorch, AppleClang portability patch, tetrahedron fixtures; native Swift bridge remains |
 | Sparse PBR sampling and glTF packing | **Verified reference component** | Bounded sampling, xatlas seams, RGBA and metallic-roughness packing, GLB reload; native assembly remains |
 | TRELLIS.2 512 image-to-3D | **Verified Torch/MPS oracle** | Default 12 steps, reloadable 61 MB GLB |
@@ -122,8 +123,11 @@ flowchart LR
 The native runtime goes further. Each installed stage will be page-aligned,
 hash-verified, mapped from disk, and wrapped with
 `MTLBuffer(bytesNoCopy:)`. Fixed scratch buffers refuse oversized work instead
-of quietly expanding. The important granularity is a **whole TRELLIS stage**,
-not one transformer layer at a time.
+of quietly expanding. A `StageSession` owns the queue, arena, checkpoint, and
+model graph; it cannot unmap weights until the queue drains and every arena
+buffer is gone. Only a standalone semantic result crosses the boundary. The
+important granularity is a **whole TRELLIS stage**, not one transformer layer
+at a time.
 
 This choice comes from investigating
 [`drumih/turbo-fieldfare`](https://github.com/drumih/turbo-fieldfare/tree/1859181ae26eb39c9698437f806be62adc01367c),

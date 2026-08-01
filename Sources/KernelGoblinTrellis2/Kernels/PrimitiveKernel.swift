@@ -419,26 +419,18 @@ public final class PrimitiveKernel: @unchecked Sendable {
         buffers: [(MTLBuffer, Int)],
         bytes: (Data, Int)
     ) throws {
-        guard let command = context.queue.makeCommandBuffer(),
-              let encoder = command.makeComputeCommandEncoder() else {
-            throw NativeRuntimeError.allocationFailed("could not create primitive Metal command")
-        }
-        encoder.setComputePipelineState(pipeline)
-        for (buffer, index) in buffers { encoder.setBuffer(buffer, offset: 0, index: index) }
-        bytes.0.withUnsafeBytes { raw in
-            encoder.setBytes(raw.baseAddress!, length: raw.count, index: bytes.1)
-        }
-        let width = min(pipeline.maxTotalThreadsPerThreadgroup, 256)
-        encoder.dispatchThreads(
-            MTLSize(width: count, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-        )
-        encoder.endEncoding()
-        command.commit()
-        command.waitUntilCompleted()
-        if command.status == .error {
-            throw NativeRuntimeError.allocationFailed(
-                "Metal primitive command failed: \(command.error?.localizedDescription ?? "unknown error")"
+        try context.runCompute(label: "primitive kernel") { encoder in
+            encoder.setComputePipelineState(pipeline)
+            for (buffer, index) in buffers {
+                encoder.setBuffer(buffer, offset: 0, index: index)
+            }
+            bytes.0.withUnsafeBytes { raw in
+                encoder.setBytes(raw.baseAddress!, length: raw.count, index: bytes.1)
+            }
+            let width = min(pipeline.maxTotalThreadsPerThreadgroup, 256)
+            encoder.dispatchThreads(
+                MTLSize(width: count, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
             )
         }
     }

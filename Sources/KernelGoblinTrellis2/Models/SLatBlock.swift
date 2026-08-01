@@ -57,7 +57,7 @@ public final class SLatBlock: @unchecked Sendable {
         }
         let modulation = try makeBuffer(length: modulationElements * 4, label: "SLat block modulation")
         try primitives.addCheckpointBF16F32(
-            input: sharedModulation, checkpoint: checkpoint.buffer,
+            input: sharedModulation, checkpoint: try checkpoint.acquireBuffer(),
             checkpointOffset: Int(blockModulation.fileOffset),
             count: modulationElements, output: modulation
         )
@@ -67,7 +67,7 @@ public final class SLatBlock: @unchecked Sendable {
 
         let norm1 = try makeBuffer(length: tensorBytes, label: "SLat norm1")
         try normalization.layerNormF32(
-            input: input, checkpoint: checkpoint.buffer, rows: tokens,
+            input: input, checkpoint: try checkpoint.acquireBuffer(), rows: tokens,
             channels: Self.channels, output: norm1
         )
         try primitives.roundBF16F32(input: norm1, count: tensorElements, output: norm1)
@@ -95,7 +95,7 @@ public final class SLatBlock: @unchecked Sendable {
 
         let norm2 = try makeBuffer(length: tensorBytes, label: "SLat norm2")
         try normalization.layerNormF32(
-            input: afterSelf, checkpoint: checkpoint.buffer, rows: tokens,
+            input: afterSelf, checkpoint: try checkpoint.acquireBuffer(), rows: tokens,
             channels: Self.channels, weightOffset: Int(normWeight.fileOffset),
             biasOffset: Int(normBias.fileOffset), output: norm2
         )
@@ -116,7 +116,7 @@ public final class SLatBlock: @unchecked Sendable {
 
         let norm3 = try makeBuffer(length: tensorBytes, label: "SLat norm3")
         try normalization.layerNormF32(
-            input: afterCross, checkpoint: checkpoint.buffer, rows: tokens,
+            input: afterCross, checkpoint: try checkpoint.acquireBuffer(), rows: tokens,
             channels: Self.channels, output: norm3
         )
         try primitives.roundBF16F32(input: norm3, count: tensorElements, output: norm3)

@@ -175,8 +175,23 @@ arena. The arena enforces a hard capacity, rejects oversized requests, and
 reports current heap use, peak heap use, cumulative allocation traffic, and
 the current device-allocation gauge separately. Tiny sampler integrations peak
 below 352 KB, which validates bounded allocation and reuse only. It is not a
-representative 512 memory claim, and synchronized checkpoint-plus-heap stage
-release remains to be proven.
+representative 512 memory claim.
+
+The synchronized release contract is now implemented by `StageSession`. It
+owns the context, flow graph, arena, and mapped checkpoint; exposes none of
+those resources; and copies the semantic result into a standalone shared
+buffer. Close enqueues and waits for a FIFO sentinel, requires zero live arena
+bytes, proves the arena wrapper was destroyed, then releases the checkpoint
+and observes the `munmap` result. Cleanup runs on success and body-error paths,
+and deliberately escaped arena or checkpoint buffers make close fail instead
+of unmapping live GPU memory. The real DINO, shape-sampler, and texture-sampler
+tests now assert the full event order and zero live bytes.
+
+Current kernels are synchronous, so their command buffers use Metal's
+unretained-reference mode inside a bounded autorelease scope. Stage-owned
+resources remain alive until each command completes, while completed command
+objects cannot accidentally extend a multi-gigabyte checkpoint mapping past
+the explicit stage boundary.
 
 The attention primitive now carries explicit segment offsets and rejects
 cross-sample attention as well as unsafe output/key/value aliases. The complete
@@ -215,6 +230,6 @@ differences rather than pretending cross-backend values are bit-exact.
 This is a model-stage result, not raw-image-to-conditioning proof. The fixture
 begins with an exact normalized NCHW tensor. Native parity for image decode,
 alpha-aware preprocessing, Lanczos resize, RGB quantization, and ImageNet
-normalization remains a separate acceptance gate. The result also remains
-arena-backed until the synchronized `StageSession` lifecycle is complete, so
-the current peak number is not yet a stage-release claim.
+normalization remains a separate acceptance gate. The `StageSession` test now
+also proves the returned conditioning is standalone, arena live use reaches
+zero, and the checkpoint is unmapped after the queue drains.

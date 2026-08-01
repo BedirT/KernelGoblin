@@ -41,4 +41,53 @@ public final class MetalContext: @unchecked Sendable {
         buffer.label = label
         return buffer
     }
+
+    func runCompute(
+        label: String,
+        _ encode: (MTLComputeCommandEncoder) throws -> Void
+    ) throws {
+        // Every current kernel waits before returning, so stage-owned buffers
+        // safely outlive unretained GPU references. The nested pool also
+        // destroys completed encoders before stage teardown.
+        try autoreleasepool {
+            guard let command = queue.makeCommandBufferWithUnretainedReferences(),
+                  let encoder = command.makeComputeCommandEncoder() else {
+                throw NativeRuntimeError.allocationFailed(
+                    "could not create \(label) Metal command"
+                )
+            }
+            command.label = label
+            do {
+                try encode(encoder)
+            } catch {
+                encoder.endEncoding()
+                throw error
+            }
+            encoder.endEncoding()
+            command.commit()
+            command.waitUntilCompleted()
+            guard command.status == .completed else {
+                throw NativeRuntimeError.allocationFailed(
+                    "\(label) failed: " +
+                        (command.error?.localizedDescription ?? "unknown error")
+                )
+            }
+        }
+    }
+
+    public func waitUntilIdle() throws {
+        guard let sentinel = queue.makeCommandBuffer() else {
+            throw NativeRuntimeError.allocationFailed(
+                "could not create Metal queue-drain sentinel"
+            )
+        }
+        sentinel.label = "KernelGoblin stage queue drain"
+        sentinel.commit()
+        sentinel.waitUntilCompleted()
+        guard sentinel.status == .completed else {
+            throw NativeRuntimeError.allocationFailed(
+                "Metal queue drain failed: \(sentinel.error?.localizedDescription ?? "unknown error")"
+            )
+        }
+    }
 }

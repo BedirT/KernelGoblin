@@ -48,26 +48,16 @@ public final class RotaryPositionKernel: @unchecked Sendable {
             frequencyDimensions: UInt32(frequencyDimensions),
             minimumFrequency: minimumFrequency, maximumFrequency: maximumFrequency
         )
-        guard let command = context.queue.makeCommandBuffer(),
-              let encoder = command.makeComputeCommandEncoder() else {
-            throw NativeRuntimeError.allocationFailed("could not create 3D RoPE command")
-        }
-        encoder.setComputePipelineState(pipeline)
-        encoder.setBuffer(input, offset: 0, index: 0)
-        encoder.setBuffer(coordinates, offset: 0, index: 1)
-        encoder.setBuffer(output, offset: 0, index: 2)
-        encoder.setBytes(&parameters, length: MemoryLayout<Parameters>.stride, index: 3)
-        let width = min(pipeline.maxTotalThreadsPerThreadgroup, 256)
-        encoder.dispatchThreads(
-            MTLSize(width: elements, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-        )
-        encoder.endEncoding()
-        command.commit()
-        command.waitUntilCompleted()
-        if command.status == .error {
-            throw NativeRuntimeError.allocationFailed(
-                "Metal 3D RoPE failed: \(command.error?.localizedDescription ?? "unknown error")"
+        try context.runCompute(label: "3D RoPE") { encoder in
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(input, offset: 0, index: 0)
+            encoder.setBuffer(coordinates, offset: 0, index: 1)
+            encoder.setBuffer(output, offset: 0, index: 2)
+            encoder.setBytes(&parameters, length: MemoryLayout<Parameters>.stride, index: 3)
+            let width = min(pipeline.maxTotalThreadsPerThreadgroup, 256)
+            encoder.dispatchThreads(
+                MTLSize(width: elements, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
             )
         }
     }

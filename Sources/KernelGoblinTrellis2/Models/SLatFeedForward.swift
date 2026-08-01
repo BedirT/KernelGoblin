@@ -48,7 +48,7 @@ public final class SLatFeedForward: @unchecked Sendable {
         }
         let hidden = try makeBuffer(length: hiddenBytes, label: "SLat MLP hidden")
         try dense.linearBF16WeightsF32Output(
-            input: input, checkpoint: checkpoint.buffer,
+            input: input, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(upWeight.fileOffset), biasOffset: Int(upBias.fileOffset),
             rows: tokens, inputChannels: Self.channels,
             outputChannels: Self.hiddenChannels, output: hidden
@@ -61,7 +61,7 @@ public final class SLatFeedForward: @unchecked Sendable {
         trace?("mlp_hidden_gelu", activated)
         let output = try makeBuffer(length: outputBytes, label: "SLat MLP output")
         try dense.linearBF16WeightsF32Output(
-            input: activated, checkpoint: checkpoint.buffer,
+            input: activated, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(downWeight.fileOffset), biasOffset: Int(downBias.fileOffset),
             rows: tokens, inputChannels: Self.hiddenChannels,
             outputChannels: Self.channels, output: output

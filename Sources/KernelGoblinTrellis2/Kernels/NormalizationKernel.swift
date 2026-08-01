@@ -132,27 +132,19 @@ public final class NormalizationKernel: @unchecked Sendable {
         pipeline: MTLComputePipelineState, count: Int,
         buffers: [(MTLBuffer, Int)], parameters: inout T
     ) throws {
-        guard let command = context.queue.makeCommandBuffer(),
-              let encoder = command.makeComputeCommandEncoder() else {
-            throw NativeRuntimeError.allocationFailed("could not create normalization command")
-        }
-        encoder.setComputePipelineState(pipeline)
-        for (buffer, index) in buffers { encoder.setBuffer(buffer, offset: 0, index: index) }
-        let parameterData = withUnsafeBytes(of: &parameters) { Data($0) }
-        parameterData.withUnsafeBytes { raw in
-            encoder.setBytes(raw.baseAddress!, length: raw.count, index: 3)
-        }
-        let width = min(pipeline.maxTotalThreadsPerThreadgroup, 256)
-        encoder.dispatchThreads(
-            MTLSize(width: count, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-        )
-        encoder.endEncoding()
-        command.commit()
-        command.waitUntilCompleted()
-        if command.status == .error {
-            throw NativeRuntimeError.allocationFailed(
-                "Metal normalization failed: \(command.error?.localizedDescription ?? "unknown error")"
+        try context.runCompute(label: "normalization kernel") { encoder in
+            encoder.setComputePipelineState(pipeline)
+            for (buffer, index) in buffers {
+                encoder.setBuffer(buffer, offset: 0, index: index)
+            }
+            let parameterData = withUnsafeBytes(of: &parameters) { Data($0) }
+            parameterData.withUnsafeBytes { raw in
+                encoder.setBytes(raw.baseAddress!, length: raw.count, index: 3)
+            }
+            let width = min(pipeline.maxTotalThreadsPerThreadgroup, 256)
+            encoder.dispatchThreads(
+                MTLSize(width: count, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
             )
         }
     }

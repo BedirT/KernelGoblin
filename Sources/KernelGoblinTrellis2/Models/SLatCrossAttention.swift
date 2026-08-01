@@ -53,7 +53,7 @@ public final class SLatCrossAttention: @unchecked Sendable {
 
         let query = try makeBuffer(length: queryBytes, label: "SLat cross query")
         try dense.linearBF16WeightsF32Output(
-            input: input, checkpoint: checkpoint.buffer,
+            input: input, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(qWeight.fileOffset), biasOffset: Int(qBias.fileOffset),
             rows: tokens, inputChannels: Self.channels, outputChannels: Self.channels,
             output: query
@@ -69,12 +69,12 @@ public final class SLatCrossAttention: @unchecked Sendable {
         let normalizedQuery = try makeBuffer(length: queryBytes, label: "SLat normalized cross query")
         let normalizedKey = try makeBuffer(length: keyBytes, label: "SLat normalized cross key")
         try normalization.multiheadRMSNormF32(
-            input: query, checkpoint: checkpoint.buffer, gammaOffset: Int(qGamma.fileOffset),
+            input: query, checkpoint: try checkpoint.acquireBuffer(), gammaOffset: Int(qGamma.fileOffset),
             rows: tokens, heads: Self.heads, dimensions: Self.headDimensions,
             output: normalizedQuery
         )
         try normalization.multiheadRMSNormF32(
-            input: key, checkpoint: checkpoint.buffer, gammaOffset: Int(kGamma.fileOffset),
+            input: key, checkpoint: try checkpoint.acquireBuffer(), gammaOffset: Int(kGamma.fileOffset),
             rows: conditioningTokens, heads: Self.heads, dimensions: Self.headDimensions,
             output: normalizedKey
         )
@@ -89,7 +89,7 @@ public final class SLatCrossAttention: @unchecked Sendable {
         try primitives.roundBF16F32(input: attended, count: queryBytes / 4, output: attended)
         let output = try makeBuffer(length: queryBytes, label: "SLat cross-attention output")
         try dense.linearBF16WeightsF32Output(
-            input: attended, checkpoint: checkpoint.buffer,
+            input: attended, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(outWeight.fileOffset), biasOffset: Int(outBias.fileOffset),
             rows: tokens, inputChannels: Self.channels, outputChannels: Self.channels,
             output: output
@@ -110,7 +110,7 @@ public final class SLatCrossAttention: @unchecked Sendable {
             length: packedBytes.partialValue, label: "SLat cross KV projection"
         )
         try dense.linearBF16WeightsF32Output(
-            input: conditioning, checkpoint: checkpoint.buffer,
+            input: conditioning, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(weight.fileOffset), biasOffset: Int(bias.fileOffset),
             rows: conditioningTokens, inputChannels: Self.contextChannels,
             outputChannels: Self.channels * 2, output: packed

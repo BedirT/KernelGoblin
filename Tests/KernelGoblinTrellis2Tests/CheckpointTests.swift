@@ -72,12 +72,195 @@ struct CheckpointTests {
         #expect(checkpoint.validByteCount == UInt64(data.count))
         #expect(checkpoint.mappedByteCount % UInt64(getpagesize()) == 0)
         let range = try checkpoint.byteRange(for: "weight")
-        let pointer = checkpoint.buffer.contents().advanced(by: range.lowerBound)
+        let mappedBuffer = try checkpoint.acquireBuffer()
+        let pointer = mappedBuffer.contents().advanced(by: range.lowerBound)
             .assumingMemoryBound(to: Float.self)
         #expect(pointer[0] == 1.25)
         #expect(pointer[1] == -2.5)
+        withExtendedLifetime(mappedBuffer) {}
         #expect(try checkpoint.sha256() == fileSHA256(at: url))
         values.removeAll()
+    }
+
+    @Test("stage session drains Metal and releases arena before checkpoint")
+    func stageSessionLifecycle() throws {
+        let url = try makeStageTestCheckpoint(weight: 2)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var events: [StageLifecycleEvent] = []
+        let session = try StageSession(
+            checkpointURL: url,
+            arenaCapacity: 1024 * 1024,
+            lifecycleObserver: { events.append($0) }
+        )
+        var inputValue: Float = 3
+        let input = try #require(session.device.makeBuffer(
+            bytes: &inputValue,
+            length: MemoryLayout<Float>.stride,
+            options: .storageModeShared
+        ))
+        let standalone = try session.withRuntimeForTesting { context, checkpoint in
+            let output = try context.makeBuffer(
+                length: MemoryLayout<Float>.stride,
+                label: "Stage lifecycle dense output"
+            )
+            let weight = try checkpoint.descriptor(named: "weight")
+            let dense = try DenseKernel(context: context)
+            for _ in 0..<8 {
+                try dense.linearF32(
+                    input: input,
+                    checkpoint: try checkpoint.acquireBuffer(),
+                    weightOffset: Int(weight.fileOffset),
+                    rows: 1,
+                    inputChannels: 1,
+                    outputChannels: 1,
+                    output: output
+                )
+            }
+            #expect(output.contents().assumingMemoryBound(to: Float.self)[0] == 6)
+            return try session.standaloneCopyForTesting(
+                output,
+                byteCount: MemoryLayout<Float>.stride
+            )
+        }
+        let snapshot = try session.close()
+        #expect(snapshot.usedBytes == 0)
+        #expect(events == [.queueDrained, .arenaReleased, .checkpointUnmapped])
+        #expect(standalone.contents().assumingMemoryBound(to: Float.self)[0] == 6)
+        #expect(try session.close() == snapshot)
+        #expect(events == [.queueDrained, .arenaReleased, .checkpointUnmapped])
+    }
+
+    @Test("stage session cleans up when its body throws")
+    func stageSessionThrowCleanup() throws {
+        let url = try makeStageTestCheckpoint(weight: 1)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var events: [StageLifecycleEvent] = []
+        do {
+            _ = try StageSession.withSession(
+                checkpointURL: url,
+                arenaCapacity: 1024 * 1024,
+                lifecycleObserver: { events.append($0) }
+            ) { _ -> Int in
+                throw StageTestFailure.expected
+            }
+            Issue.record("expected the stage body to throw")
+        } catch StageTestFailure.expected {
+            // The original body error is preserved when cleanup succeeds.
+        }
+        #expect(events == [.queueDrained, .arenaReleased, .checkpointUnmapped])
+    }
+
+    @Test("stage session unmaps its checkpoint when digest verification fails")
+    func stageSessionDigestFailureCleanup() throws {
+        let url = try makeStageTestCheckpoint(weight: 1)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var events: [StageLifecycleEvent] = []
+        #expect(
+            throws: NativeRuntimeError.invalidArgument(
+                "stage checkpoint SHA-256 mismatch"
+            )
+        ) {
+            _ = try StageSession(
+                checkpointURL: url,
+                expectedCheckpointSHA256: String(repeating: "0", count: 64),
+                arenaCapacity: 1024 * 1024,
+                lifecycleObserver: { events.append($0) }
+            )
+        }
+        #expect(events == [.checkpointUnmapped])
+    }
+
+    @Test("stage session refuses teardown while an arena buffer escapes")
+    func stageSessionRejectsEscapedArenaBuffer() throws {
+        let url = try makeStageTestCheckpoint(weight: 1)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var events: [StageLifecycleEvent] = []
+        let session = try StageSession(
+            checkpointURL: url,
+            arenaCapacity: 1024 * 1024,
+            lifecycleObserver: { events.append($0) }
+        )
+        var escaped: MTLBuffer? = try session.withRuntimeForTesting { context, _ in
+            try context.makeBuffer(length: 4096, label: "Deliberately escaped arena buffer")
+        }
+        #expect(escaped != nil)
+        #expect(throws: StageSessionError.arenaStillLive(4096)) {
+            try session.close()
+        }
+        #expect(session.checkpointIsMappedForTesting)
+        #expect(events == [.queueDrained])
+        escaped = nil
+        let snapshot = try session.close()
+        #expect(snapshot.usedBytes == 0)
+        #expect(events == [
+            .queueDrained, .queueDrained, .arenaReleased, .checkpointUnmapped,
+        ])
+    }
+
+    @Test("stage session retries checkpoint release without repeating arena teardown")
+    func stageSessionRetriesEscapedCheckpointBuffer() throws {
+        let url = try makeStageTestCheckpoint(weight: 1)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var events: [StageLifecycleEvent] = []
+        let session = try StageSession(
+            checkpointURL: url,
+            arenaCapacity: 1024 * 1024,
+            lifecycleObserver: { events.append($0) }
+        )
+        var escaped = session.checkpointBufferForTesting
+        #expect(escaped != nil)
+        #expect(throws: MappedCheckpointError.mappingStillReferenced) {
+            try session.close()
+        }
+        #expect(events == [.queueDrained, .arenaReleased])
+        escaped = nil
+        let snapshot = try session.close()
+        #expect(snapshot.usedBytes == 0)
+        #expect(events == [.queueDrained, .arenaReleased, .checkpointUnmapped])
+    }
+
+    @Test("mapped checkpoint close detects an escaped Metal buffer")
+    func mappedCheckpointRejectsEscapedBuffer() throws {
+        let url = try makeStageTestCheckpoint(weight: 1)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let checkpoint = try MappedCheckpoint(url: url, device: device)
+        var escaped: MTLBuffer? = try checkpoint.acquireBuffer()
+        #expect(escaped != nil)
+        #expect(throws: MappedCheckpointError.mappingStillReferenced) {
+            try checkpoint.close(releaseTimeout: 0)
+        }
+        #expect(checkpoint.isMapped)
+        escaped = nil
+        try checkpoint.close()
+        #expect(!checkpoint.isMapped)
+        #expect(throws: MappedCheckpointError.closed) {
+            try checkpoint.acquireBuffer()
+        }
+    }
+
+    @Test("stage session retries after an externally retained empty arena")
+    func stageSessionRetriesRetainedArena() throws {
+        let url = try makeStageTestCheckpoint(weight: 1)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var events: [StageLifecycleEvent] = []
+        let session = try StageSession(
+            checkpointURL: url,
+            arenaCapacity: 1024 * 1024,
+            lifecycleObserver: { events.append($0) }
+        )
+        var escapedContext: MetalContext? = try session.withRuntimeForTesting {
+            context, _ in context
+        }
+        #expect(escapedContext != nil)
+        #expect(throws: StageSessionError.arenaNotReleased) {
+            try session.close()
+        }
+        #expect(events == [.queueDrained])
+        escapedContext = nil
+        let snapshot = try session.close()
+        #expect(snapshot.usedBytes == 0)
+        #expect(events == [.queueDrained, .arenaReleased, .checkpointUnmapped])
     }
 
     @Test("safetensors rejects shape and range disagreement")
@@ -805,13 +988,13 @@ struct CheckpointTests {
         let path = try #require(
             ProcessInfo.processInfo.environment["KG_TRELLIS2_DINO_CHECKPOINT"]
         )
-        let context = try MetalContext(arenaCapacity: 64 * 1024 * 1024)
-        let checkpoint = try MappedCheckpoint(
-            url: URL(fileURLWithPath: path), device: context.device
-        )
-        try #require(
-            checkpoint.sha256() ==
-                "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179"
+        var lifecycle: [StageLifecycleEvent] = []
+        let session = try StageSession(
+            checkpointURL: URL(fileURLWithPath: path),
+            expectedCheckpointSHA256:
+                "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179",
+            arenaCapacity: 64 * 1024 * 1024,
+            lifecycleObserver: { lifecycle.append($0) }
         )
         let traceURL = try #require(Bundle.module.url(
             forResource: "dino-stage-tiny", withExtension: "f32.trace",
@@ -828,16 +1011,18 @@ struct CheckpointTests {
         let stageElements = 9 * 1024
         try #require(oracle.count == imageElements + 26 * stageElements)
         var imageValues = Array(oracle[0..<imageElements])
-        let image = try #require(context.device.makeBuffer(
+        let image = try #require(session.device.makeBuffer(
             bytes: &imageValues, length: imageValues.count * 4,
             options: .storageModeShared
         ))
         var traces: [(String, [Float])] = []
-        let result = try DINOv3Conditioner(context: context).encodeNormalizedImageF32(
-            image: image, imageHeight: 32, imageWidth: 32,
-            checkpoint: checkpoint,
+        let result = try session.encodeDINOv3F32(
+            normalizedImage: image, imageHeight: 32, imageWidth: 32,
             trace: { name, values in traces.append((name, values)) }
         )
+        let memory = try session.close()
+        #expect(memory.usedBytes == 0)
+        #expect(lifecycle == [.queueDrained, .arenaReleased, .checkpointUnmapped])
         #expect(result.tokenCount == 9)
         #expect(result.hiddenSize == 1024)
         try #require(traces.count == 26)
@@ -914,7 +1099,6 @@ struct CheckpointTests {
         for index in expectedOutput.indices {
             #expect(abs(actual[index] - expectedOutput[index]) <= 1e-4)
         }
-        let memory = try #require(context.arena).snapshot()
         print(
             "DINO arena: peak=\(memory.peakUsedBytes) " +
             "live=\(memory.usedBytes) allocations=\(memory.allocationCount)"
@@ -933,13 +1117,13 @@ struct CheckpointTests {
         let path = try #require(
             ProcessInfo.processInfo.environment["KG_TRELLIS2_DINO_CHECKPOINT"]
         )
-        let context = try MetalContext(arenaCapacity: 256 * 1024 * 1024)
-        let checkpoint = try MappedCheckpoint(
-            url: URL(fileURLWithPath: path), device: context.device
-        )
-        try #require(
-            checkpoint.sha256() ==
-                "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179"
+        var lifecycle: [StageLifecycleEvent] = []
+        let session = try StageSession(
+            checkpointURL: URL(fileURLWithPath: path),
+            expectedCheckpointSHA256:
+                "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179",
+            arenaCapacity: 256 * 1024 * 1024,
+            lifecycleObserver: { lifecycle.append($0) }
         )
         let inputFixture = try #require(Bundle.module.url(
             forResource: "dino-stage-512", withExtension: "f32.trace",
@@ -953,16 +1137,18 @@ struct CheckpointTests {
             Array($0.bindMemory(to: Float.self))
         }
         try #require(imageValues.count == 3 * 512 * 512)
-        let image = try #require(context.device.makeBuffer(
+        let image = try #require(session.device.makeBuffer(
             bytes: &imageValues, length: imageValues.count * 4,
             options: .storageModeShared
         ))
         let started = ContinuousClock.now
-        let result = try DINOv3Conditioner(context: context).encodeNormalizedImageF32(
-            image: image, imageHeight: 512, imageWidth: 512,
-            checkpoint: checkpoint
+        let result = try session.encodeDINOv3F32(
+            normalizedImage: image, imageHeight: 512, imageWidth: 512
         )
         let elapsed = started.duration(to: .now)
+        let memory = try session.close()
+        #expect(memory.usedBytes == 0)
+        #expect(lifecycle == [.queueDrained, .arenaReleased, .checkpointUnmapped])
         #expect(result.tokenCount == 1029)
         #expect(result.hiddenSize == 1024)
 
@@ -992,7 +1178,6 @@ struct CheckpointTests {
         let rms = sqrt(squaredError / Double(expected.count))
         let expectedRMS = sqrt(expectedSquaredMagnitude / Double(expected.count))
         let normalizedRMS = rms / expectedRMS
-        let memory = try #require(context.arena).snapshot()
         print(
             "DINO 512: max=\(maximumError) rms=\(rms) " +
             "normalized_rms=\(normalizedRMS) elapsed=\(elapsed) " +
@@ -1014,13 +1199,13 @@ struct CheckpointTests {
         let path = try #require(
             ProcessInfo.processInfo.environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"]
         )
-        let context = try MetalContext(arenaCapacity: 16 * 1024 * 1024)
-        let checkpoint = try MappedCheckpoint(
-            url: URL(fileURLWithPath: path), device: context.device
-        )
-        try #require(
-            checkpoint.sha256() ==
-                "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f"
+        var lifecycle: [StageLifecycleEvent] = []
+        let session = try StageSession(
+            checkpointURL: URL(fileURLWithPath: path),
+            expectedCheckpointSHA256:
+                "ec5e0917ef9b7e25ad51dffc7d19687a42019871f94239f2fa7f86264c55b70f",
+            arenaCapacity: 16 * 1024 * 1024,
+            lifecycleObserver: { lifecycle.append($0) }
         )
         let tokens = 2
         let conditioningTokens = 2
@@ -1034,45 +1219,44 @@ struct CheckpointTests {
             repeating: 0, count: conditioningTokens * 1024
         )
         var coordinates: [Int32] = [0, 0, 0, 0, 0, 1, 2, 3]
-        let noiseBuffer = try #require(context.device.makeBuffer(
+        let noiseBuffer = try #require(session.device.makeBuffer(
             bytes: &noise, length: noise.count * 4, options: .storageModeShared
         ))
-        let positiveBuffer = try #require(context.device.makeBuffer(
+        let positiveBuffer = try #require(session.device.makeBuffer(
             bytes: &positiveConditioning, length: positiveConditioning.count * 4,
             options: .storageModeShared
         ))
-        let negativeBuffer = try #require(context.device.makeBuffer(
+        let negativeBuffer = try #require(session.device.makeBuffer(
             bytes: &negativeConditioning, length: negativeConditioning.count * 4,
             options: .storageModeShared
         ))
-        let coordinateBuffer = try #require(context.device.makeBuffer(
+        let coordinateBuffer = try #require(session.device.makeBuffer(
             bytes: &coordinates, length: coordinates.count * 4,
             options: .storageModeShared
         ))
         var modelTrace: [[Float]] = []
         var samplerTrace: [[Float]] = []
 
-        let result = try SLatFlowPipeline(context: context).sampleShapeF32(
+        let result = try session.sampleShapeF32(
             noise: noiseBuffer, coordinates: coordinateBuffer,
             positiveConditioning: positiveBuffer,
             negativeConditioning: negativeBuffer,
-            checkpoint: checkpoint, tokens: tokens,
-            conditioningTokens: conditioningTokens,
+            tokens: tokens, conditioningTokens: conditioningTokens,
             parameters: .shape512(steps: 2),
-            modelTrace: { call, _, output in
+            modelTrace: { call, _, values in
                 #expect(call == modelTrace.count)
-                let values = output.contents().assumingMemoryBound(to: Float.self)
-                modelTrace.append((0..<noise.count).map { values[$0] })
+                modelTrace.append(values)
             },
-            samplerTrace: { step, state in
+            samplerTrace: { step, values in
                 #expect(step == samplerTrace.count)
-                let values = state.contents().assumingMemoryBound(to: Float.self)
-                samplerTrace.append((0..<noise.count).map { values[$0] })
+                samplerTrace.append(values)
             }
         )
         #expect(result.modelCallCount == 4)
-        let memory = try #require(context.arena).snapshot()
+        let memory = try session.close()
+        #expect(memory.usedBytes == 0)
         #expect(memory.peakUsedBytes < memory.capacityBytes)
+        #expect(lifecycle == [.queueDrained, .arenaReleased, .checkpointUnmapped])
         print(
             "shape sampler arena: peak=\(memory.peakUsedBytes) " +
             "live=\(memory.usedBytes) allocations=\(memory.allocationCount)"
@@ -1157,13 +1341,13 @@ struct CheckpointTests {
         let path = try #require(
             ProcessInfo.processInfo.environment["KG_TRELLIS2_TEXTURE_FLOW_CHECKPOINT"]
         )
-        let context = try MetalContext(arenaCapacity: 16 * 1024 * 1024)
-        let checkpoint = try MappedCheckpoint(
-            url: URL(fileURLWithPath: path), device: context.device
-        )
-        try #require(
-            checkpoint.sha256() ==
-                "8371aa1c5d13be79dcd5ddfd2cf3835e902e204dc34427169a1c702828e1a94d"
+        var lifecycle: [StageLifecycleEvent] = []
+        let session = try StageSession(
+            checkpointURL: URL(fileURLWithPath: path),
+            expectedCheckpointSHA256:
+                "8371aa1c5d13be79dcd5ddfd2cf3835e902e204dc34427169a1c702828e1a94d",
+            arenaCapacity: 16 * 1024 * 1024,
+            lifecycleObserver: { lifecycle.append($0) }
         )
         let tokens = 2
         let conditioningTokens = 2
@@ -1180,43 +1364,41 @@ struct CheckpointTests {
             Float(sin(Double($0) * 0.015) * 0.25)
         }
         var coordinates: [Int32] = [0, 0, 0, 0, 0, 1, 2, 3]
-        let noiseBuffer = try #require(context.device.makeBuffer(
+        let noiseBuffer = try #require(session.device.makeBuffer(
             bytes: &noise, length: noise.count * 4, options: .storageModeShared
         ))
-        let shapeBuffer = try #require(context.device.makeBuffer(
+        let shapeBuffer = try #require(session.device.makeBuffer(
             bytes: &shape, length: shape.count * 4, options: .storageModeShared
         ))
-        let conditioningBuffer = try #require(context.device.makeBuffer(
+        let conditioningBuffer = try #require(session.device.makeBuffer(
             bytes: &conditioning, length: conditioning.count * 4,
             options: .storageModeShared
         ))
-        let coordinateBuffer = try #require(context.device.makeBuffer(
+        let coordinateBuffer = try #require(session.device.makeBuffer(
             bytes: &coordinates, length: coordinates.count * 4,
             options: .storageModeShared
         ))
         var modelTrace: [[Float]] = []
         var samplerTrace: [[Float]] = []
-        let pipeline = try SLatFlowPipeline(context: context)
-        let result = try pipeline.sampleTextureF32(
+        let result = try session.sampleTextureF32(
             noise: noiseBuffer, shapeLatent: shapeBuffer,
             coordinates: coordinateBuffer, positiveConditioning: conditioningBuffer,
-            checkpoint: checkpoint, tokens: tokens,
-            conditioningTokens: conditioningTokens,
+            tokens: tokens, conditioningTokens: conditioningTokens,
             parameters: .texture512(steps: 2),
-            modelTrace: { call, output in
+            modelTrace: { call, values in
                 #expect(call == modelTrace.count)
-                let values = output.contents().assumingMemoryBound(to: Float.self)
-                modelTrace.append((0..<noise.count).map { values[$0] })
+                modelTrace.append(values)
             },
-            samplerTrace: { step, state in
+            samplerTrace: { step, values in
                 #expect(step == samplerTrace.count)
-                let values = state.contents().assumingMemoryBound(to: Float.self)
-                samplerTrace.append((0..<noise.count).map { values[$0] })
+                samplerTrace.append(values)
             }
         )
         #expect(result.modelCallCount == 2)
-        let memory = try #require(context.arena).snapshot()
+        let memory = try session.close()
+        #expect(memory.usedBytes == 0)
         #expect(memory.peakUsedBytes < memory.capacityBytes)
+        #expect(lifecycle == [.queueDrained, .arenaReleased, .checkpointUnmapped])
         print(
             "texture sampler arena: peak=\(memory.peakUsedBytes) " +
             "live=\(memory.usedBytes) allocations=\(memory.allocationCount)"
@@ -1727,6 +1909,26 @@ struct CheckpointTests {
 
 private func bf16(_ value: Float) -> UInt16 {
     UInt16(truncatingIfNeeded: value.bitPattern >> 16)
+}
+
+private enum StageTestFailure: Error {
+    case expected
+}
+
+private func makeStageTestCheckpoint(weight: Float) throws -> URL {
+    var header = try JSONSerialization.data(withJSONObject: [
+        "weight": ["dtype": "F32", "shape": [1, 1], "data_offsets": [0, 4]],
+    ], options: [.sortedKeys])
+    while header.count % 8 != 0 { header.append(0x20) }
+    var length = UInt64(header.count).littleEndian
+    var data = withUnsafeBytes(of: &length) { Data($0) }
+    data.append(header)
+    var weight = weight
+    data.append(withUnsafeBytes(of: &weight) { Data($0) })
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("kg-stage-\(UUID().uuidString).safetensors")
+    try data.write(to: url, options: .atomic)
+    return url
 }
 
 private func fromBF16(_ value: UInt16) -> Float {

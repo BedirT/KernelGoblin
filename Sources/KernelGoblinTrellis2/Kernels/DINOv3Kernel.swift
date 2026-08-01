@@ -135,30 +135,24 @@ public final class DINOv3Kernel: @unchecked Sendable {
         parameters: inout Parameters,
         parameterIndex: Int
     ) throws {
-        guard count > 0, count <= Int(UInt32.max),
-              let command = context.queue.makeCommandBuffer(),
-              let encoder = command.makeComputeCommandEncoder() else {
-            throw NativeRuntimeError.allocationFailed("could not create DINO Metal command")
+        guard count > 0, count <= Int(UInt32.max) else {
+            throw NativeRuntimeError.invalidArgument("invalid DINO Metal dispatch count")
         }
-        encoder.setComputePipelineState(pipeline)
-        for (buffer, index) in buffers { encoder.setBuffer(buffer, offset: 0, index: index) }
-        let parameterData = withUnsafeBytes(of: &parameters) { Data($0) }
-        parameterData.withUnsafeBytes { bytes in
-            encoder.setBytes(
-                bytes.baseAddress!, length: bytes.count, index: parameterIndex
-            )
-        }
-        let width = min(pipeline.maxTotalThreadsPerThreadgroup, 256)
-        encoder.dispatchThreads(
-            MTLSize(width: count, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-        )
-        encoder.endEncoding()
-        command.commit()
-        command.waitUntilCompleted()
-        guard command.status == .completed else {
-            throw NativeRuntimeError.allocationFailed(
-                "DINO Metal command failed: \(command.error?.localizedDescription ?? "unknown error")"
+        try context.runCompute(label: "DINO kernel") { encoder in
+            encoder.setComputePipelineState(pipeline)
+            for (buffer, index) in buffers {
+                encoder.setBuffer(buffer, offset: 0, index: index)
+            }
+            let parameterData = withUnsafeBytes(of: &parameters) { Data($0) }
+            parameterData.withUnsafeBytes { bytes in
+                encoder.setBytes(
+                    bytes.baseAddress!, length: bytes.count, index: parameterIndex
+                )
+            }
+            let width = min(pipeline.maxTotalThreadsPerThreadgroup, 256)
+            encoder.dispatchThreads(
+                MTLSize(width: count, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
             )
         }
     }

@@ -36,7 +36,6 @@ public final class DenseKernel: @unchecked Sendable {
         )
     }
 
-    @discardableResult
     public func linearF32(
         input: MTLBuffer,
         checkpoint: MTLBuffer,
@@ -46,7 +45,7 @@ public final class DenseKernel: @unchecked Sendable {
         inputChannels: Int,
         outputChannels: Int,
         output: MTLBuffer
-    ) throws -> MTLCommandBuffer {
+    ) throws {
         try linear(
             pipeline: linearF32Pipeline,
             elementWidth: MemoryLayout<Float>.stride,
@@ -61,7 +60,6 @@ public final class DenseKernel: @unchecked Sendable {
         )
     }
 
-    @discardableResult
     public func linearBF16WeightsF32Output(
         input: MTLBuffer,
         checkpoint: MTLBuffer,
@@ -71,7 +69,7 @@ public final class DenseKernel: @unchecked Sendable {
         inputChannels: Int,
         outputChannels: Int,
         output: MTLBuffer
-    ) throws -> MTLCommandBuffer {
+    ) throws {
         try linear(
             pipeline: linearBF16WeightsPipeline,
             elementWidth: MemoryLayout<UInt16>.stride,
@@ -97,7 +95,7 @@ public final class DenseKernel: @unchecked Sendable {
         inputChannels: Int,
         outputChannels: Int,
         output: MTLBuffer
-    ) throws -> MTLCommandBuffer {
+    ) throws {
         guard rows > 0, inputChannels > 0, outputChannels > 0,
               weightOffset >= 0, biasOffset.map({ $0 >= 0 }) ?? true else {
             throw NativeRuntimeError.invalidArgument("linear dimensions and offsets must be positive")
@@ -133,38 +131,29 @@ public final class DenseKernel: @unchecked Sendable {
             outputChannels: UInt32(outputChannels),
             hasBias: biasOffset == nil ? 0 : 1
         )
-        guard let command = context.queue.makeCommandBuffer(),
-              let encoder = command.makeComputeCommandEncoder() else {
-            throw NativeRuntimeError.allocationFailed("could not create dense Metal command")
-        }
-        encoder.setComputePipelineState(pipeline)
-        encoder.setBuffer(input, offset: 0, index: 0)
-        encoder.setBuffer(checkpoint, offset: 0, index: 1)
-        encoder.setBuffer(output, offset: 0, index: 2)
-        encoder.setBytes(&parameters, length: MemoryLayout<LinearF32Parameters>.stride, index: 3)
-        let tile = Self.tileSize
-        guard pipeline.maxTotalThreadsPerThreadgroup >= tile * tile else {
-            throw NativeRuntimeError.invalidArgument(
-                "Metal device cannot dispatch the required dense tile"
+        try context.runCompute(label: "dense kernel") { encoder in
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(input, offset: 0, index: 0)
+            encoder.setBuffer(checkpoint, offset: 0, index: 1)
+            encoder.setBuffer(output, offset: 0, index: 2)
+            encoder.setBytes(
+                &parameters, length: MemoryLayout<LinearF32Parameters>.stride, index: 3
+            )
+            let tile = Self.tileSize
+            guard pipeline.maxTotalThreadsPerThreadgroup >= tile * tile else {
+                throw NativeRuntimeError.invalidArgument(
+                    "Metal device cannot dispatch the required dense tile"
+                )
+            }
+            encoder.dispatchThreadgroups(
+                MTLSize(
+                    width: (outputChannels + tile - 1) / tile,
+                    height: (rows + tile - 1) / tile,
+                    depth: 1
+                ),
+                threadsPerThreadgroup: MTLSize(width: tile, height: tile, depth: 1)
             )
         }
-        encoder.dispatchThreadgroups(
-            MTLSize(
-                width: (outputChannels + tile - 1) / tile,
-                height: (rows + tile - 1) / tile,
-                depth: 1
-            ),
-            threadsPerThreadgroup: MTLSize(width: tile, height: tile, depth: 1)
-        )
-        encoder.endEncoding()
-        command.commit()
-        command.waitUntilCompleted()
-        if command.status == .error {
-            throw NativeRuntimeError.allocationFailed(
-                "Metal dense command failed: \(command.error?.localizedDescription ?? "unknown error")"
-            )
-        }
-        return command
     }
 }
 

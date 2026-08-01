@@ -62,12 +62,12 @@ public final class SLatSelfAttention: @unchecked Sendable {
         let normalizedQuery = try makeBuffer(length: tensorBytes, label: "SLat normalized query")
         let normalizedKey = try makeBuffer(length: tensorBytes, label: "SLat normalized key")
         try normalization.multiheadRMSNormF32(
-            input: query, checkpoint: checkpoint.buffer, gammaOffset: Int(qGamma.fileOffset),
+            input: query, checkpoint: try checkpoint.acquireBuffer(), gammaOffset: Int(qGamma.fileOffset),
             rows: tokens, heads: Self.heads, dimensions: Self.headDimensions,
             output: normalizedQuery
         )
         try normalization.multiheadRMSNormF32(
-            input: key, checkpoint: checkpoint.buffer, gammaOffset: Int(kGamma.fileOffset),
+            input: key, checkpoint: try checkpoint.acquireBuffer(), gammaOffset: Int(kGamma.fileOffset),
             rows: tokens, heads: Self.heads, dimensions: Self.headDimensions,
             output: normalizedKey
         )
@@ -113,7 +113,7 @@ public final class SLatSelfAttention: @unchecked Sendable {
         )
         let output = try makeBuffer(length: tensorBytes, label: "SLat self-attention output")
         try dense.linearBF16WeightsF32Output(
-            input: attended, checkpoint: checkpoint.buffer,
+            input: attended, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(outWeight.fileOffset), biasOffset: Int(outBias.fileOffset),
             rows: tokens, inputChannels: Self.channels, outputChannels: Self.channels,
             output: output
@@ -153,7 +153,7 @@ public final class SLatSelfAttention: @unchecked Sendable {
         let qkvElements = qkvBytes / MemoryLayout<Float>.stride
         let qkv = try makeBuffer(length: qkvBytes, label: "SLat QKV projection")
         try dense.linearBF16WeightsF32Output(
-            input: input, checkpoint: checkpoint.buffer,
+            input: input, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(weight.fileOffset), biasOffset: Int(bias.fileOffset),
             rows: tokens, inputChannels: Self.channels,
             outputChannels: Self.channels * 3, output: qkv

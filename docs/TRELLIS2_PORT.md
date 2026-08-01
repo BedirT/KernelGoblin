@@ -56,6 +56,7 @@ settings for all eight 512 components are machine-readable in
 | TRELLIS texture flow | Verified native stage | Separate real 64-channel input/30-block/output graph; two-token F32 output has `0.00733` RMS error against pinned Torch |
 | Native Flow Euler | Verified native orchestration | Exact schedule, interval CFG/rescale, shape/texture normalization, and repeated real-checkpoint flow calls |
 | Metal memory arena | Verified native foundation | Hard heap capacity, overflow rejection, and current/peak/cumulative allocation evidence across both sampler integrations |
+| Stage lifecycle | Verified native foundation | Queue drain, zero live arena bytes, arena destruction, observed checkpoint unmap, error-path cleanup, and standalone outputs |
 | Morton coding | Verified native Metal | Bit-exact differential and randomized round trips |
 | UV raster | Verified analytic Metal slice | Physical render, analytic coverage/interpolation; nvdiffrast CUDA goldens pending |
 | PBR bake | Experimental reference | Synthetic component tests and GLB reload; upstream mesh semantics pending |
@@ -113,8 +114,10 @@ flowchart LR
 The native runtime goes further by mapping the verified checkpoint into a
 no-copy `MTLBuffer` and routing flow/sampler temporaries through a heap-backed
 Metal arena. The arena refuses overflow and reports current, peak, and
-cumulative requested bytes separately. A synchronized full-stage release
-contract remains an acceptance gate. This work borrows its discipline from
+cumulative requested bytes separately. `StageSession` now drains the queue,
+requires zero live arena bytes, destroys the arena, observes the checkpoint's
+`munmap`, and carries only a standalone output into the next stage. This work
+borrows its discipline from
 [`drumih/turbo-fieldfare`](https://github.com/drumih/turbo-fieldfare/tree/1859181ae26eb39c9698437f806be62adc01367c),
 but not its expert cache: TRELLIS stages are dense and reuse every block at
 every denoising step, so per-layer SSD streaming would reread almost the whole
@@ -216,14 +219,12 @@ against pinned upstream outputs.
 
 1. Reproduce alpha-aware crop, Lanczos resize, RGB conversion, and ImageNet
    normalization in the native image loader.
-2. Prove synchronized stage teardown: queue drain, zero live arena bytes,
-   checkpoint unmap, and standalone output ownership.
-3. Implement the sparse-structure flow, occupancy decoder, sparse tensor
+2. Implement the sparse-structure flow, occupancy decoder, sparse tensor
    topology, convolution, S2C/C2S, and decoder caches.
-4. Complete shape and texture VAE stages and six-channel PBR decoding.
-5. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.
-6. Run existing-mesh texturing end to end with preserved and regenerated UVs.
-7. Profile only after parity, then optimize the measured bottlenecks.
+3. Complete shape and texture VAE stages and six-channel PBR decoding.
+4. Match pinned PBR mesh/material fixtures and run 512 image-to-PBR-GLB.
+5. Run existing-mesh texturing end to end with preserved and regenerated UVs.
+6. Profile only after parity, then optimize the measured bottlenecks.
 
 For the production package and memory contracts, continue with
 [`NATIVE_TRELLIS2_ARCHITECTURE.md`](NATIVE_TRELLIS2_ARCHITECTURE.md).

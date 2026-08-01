@@ -79,7 +79,7 @@ enum KernelGoblinTrellis2Command {
         let kernel = try DenseKernel(context: context)
         try kernel.linearF32(
             input: input,
-            checkpoint: checkpoint.buffer,
+            checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(weight.fileOffset),
             biasOffset: Int(bias.fileOffset),
             rows: 1,
@@ -87,9 +87,10 @@ enum KernelGoblinTrellis2Command {
             outputChannels: outputChannels,
             output: output
         )
-        let weights = checkpoint.buffer.contents().advanced(by: Int(weight.fileOffset))
+        let mappedBuffer = try checkpoint.acquireBuffer()
+        let weights = mappedBuffer.contents().advanced(by: Int(weight.fileOffset))
             .assumingMemoryBound(to: Float.self)
-        let biases = checkpoint.buffer.contents().advanced(by: Int(bias.fileOffset))
+        let biases = mappedBuffer.contents().advanced(by: Int(bias.fileOffset))
             .assumingMemoryBound(to: Float.self)
         let actual = output.contents().assumingMemoryBound(to: Float.self)
         var maximumAbsoluteError: Float = 0
@@ -103,6 +104,7 @@ enum KernelGoblinTrellis2Command {
             maximumAbsoluteError = max(maximumAbsoluteError, absolute)
             maximumRelativeError = max(maximumRelativeError, absolute / max(abs(expected), 1e-6))
         }
+        withExtendedLifetime(mappedBuffer) {}
         guard maximumAbsoluteError <= 2e-5 || maximumRelativeError <= 2e-5 else {
             throw Exit.conformanceFailed(maximumAbsoluteError, maximumRelativeError)
         }
@@ -149,7 +151,7 @@ enum KernelGoblinTrellis2Command {
         let kernel = try DenseKernel(context: context)
         try kernel.linearBF16WeightsF32Output(
             input: input,
-            checkpoint: checkpoint.buffer,
+            checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(weight.fileOffset),
             biasOffset: Int(bias.fileOffset),
             rows: rows,
@@ -158,9 +160,10 @@ enum KernelGoblinTrellis2Command {
             output: output
         )
 
-        let weights = checkpoint.buffer.contents().advanced(by: Int(weight.fileOffset))
+        let mappedBuffer = try checkpoint.acquireBuffer()
+        let weights = mappedBuffer.contents().advanced(by: Int(weight.fileOffset))
             .assumingMemoryBound(to: UInt16.self)
-        let biases = checkpoint.buffer.contents().advanced(by: Int(bias.fileOffset))
+        let biases = mappedBuffer.contents().advanced(by: Int(bias.fileOffset))
             .assumingMemoryBound(to: UInt16.self)
         let actual = output.contents().assumingMemoryBound(to: Float.self)
         var maximumAbsoluteError: Float = 0
@@ -184,6 +187,7 @@ enum KernelGoblinTrellis2Command {
                 }
             }
         }
+        withExtendedLifetime(mappedBuffer) {}
         guard mismatchedBF16 == 0,
               maximumAbsoluteError <= 2e-5 || maximumRelativeError <= 2e-5 else {
             throw Exit.slatConformanceFailed(
@@ -242,27 +246,28 @@ enum KernelGoblinTrellis2Command {
             timesteps: timestepBuffer, rows: 1, dimensions: 256, output: frequency
         )
         try dense.linearBF16WeightsF32Output(
-            input: frequency, checkpoint: checkpoint.buffer,
+            input: frequency, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(tensors[names[0]]!.fileOffset),
             biasOffset: Int(tensors[names[1]]!.fileOffset), rows: 1,
             inputChannels: 256, outputChannels: 1536, output: hidden
         )
         try primitives.siluF32(input: hidden, count: 1536, output: activated)
         try dense.linearBF16WeightsF32Output(
-            input: activated, checkpoint: checkpoint.buffer,
+            input: activated, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(tensors[names[2]]!.fileOffset),
             biasOffset: Int(tensors[names[3]]!.fileOffset), rows: 1,
             inputChannels: 1536, outputChannels: 1536, output: embedding
         )
         try primitives.siluF32(input: embedding, count: 1536, output: modulationInput)
         try dense.linearBF16WeightsF32Output(
-            input: modulationInput, checkpoint: checkpoint.buffer,
+            input: modulationInput, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(tensors[names[4]]!.fileOffset),
             biasOffset: Int(tensors[names[5]]!.fileOffset), rows: 1,
             inputChannels: 1536, outputChannels: 9216, output: modulation
         )
 
-        let mapped = checkpoint.buffer.contents()
+        let mappedBuffer = try checkpoint.acquireBuffer()
+        let mapped = mappedBuffer.contents()
         var expected = cpuTimestepEmbedding(timestep: timestep[0], dimensions: 256)
         expected = cpuLinearBF16(
             input: expected, mapped: mapped,
@@ -291,6 +296,7 @@ enum KernelGoblinTrellis2Command {
                 mismatchedBF16 += 1
             }
         }
+        withExtendedLifetime(mappedBuffer) {}
         guard maximumAbsoluteError <= 2e-4, mismatchedBF16 == 0 else {
             throw Exit.slatConformanceFailed(
                 maximumAbsoluteError, maximumRelativeError, mismatchedBF16
@@ -323,7 +329,8 @@ enum KernelGoblinTrellis2Command {
             coordinates: nil
         )
 
-        let mapped = checkpoint.buffer.contents()
+        let mappedBuffer = try checkpoint.acquireBuffer()
+        let mapped = mappedBuffer.contents()
         let qkvWeight = try checkpoint.descriptor(named: "blocks.0.self_attn.to_qkv.weight")
         let qkvBias = try checkpoint.descriptor(named: "blocks.0.self_attn.to_qkv.bias")
         var qkv = cpuLinearBF16Rows(
@@ -373,6 +380,7 @@ enum KernelGoblinTrellis2Command {
             maximumAbsoluteError = max(maximumAbsoluteError, abs(actual[index] - expected[index]))
             if actual[index].bitPattern != expected[index].bitPattern { mismatchedBF16 += 1 }
         }
+        withExtendedLifetime(mappedBuffer) {}
         guard mismatchedBF16 == 0 else {
             throw Exit.slatConformanceFailed(maximumAbsoluteError, 0, mismatchedBF16)
         }
@@ -407,7 +415,8 @@ enum KernelGoblinTrellis2Command {
             block: 0, tokens: tokens, conditioningTokens: conditioningTokens
         )
 
-        let mapped = checkpoint.buffer.contents()
+        let mappedBuffer = try checkpoint.acquireBuffer()
+        let mapped = mappedBuffer.contents()
         let prefix = "blocks.0.cross_attn"
         let qWeight = try checkpoint.descriptor(named: "\(prefix).to_q.weight")
         let qBias = try checkpoint.descriptor(named: "\(prefix).to_q.bias")
@@ -460,6 +469,7 @@ enum KernelGoblinTrellis2Command {
             maximumAbsoluteError = max(maximumAbsoluteError, abs(actual[index] - expected[index]))
             if actual[index].bitPattern != expected[index].bitPattern { mismatchedBF16 += 1 }
         }
+        withExtendedLifetime(mappedBuffer) {}
         guard mismatchedBF16 == 0 else {
             throw Exit.slatConformanceFailed(maximumAbsoluteError, 0, mismatchedBF16)
         }
