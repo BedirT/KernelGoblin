@@ -11,6 +11,10 @@ let package = Package(
             name: "kg-trellis2-dense-bench",
             targets: ["KernelGoblinTrellis2DenseBenchmark"]
         ),
+        .executable(
+            name: "kg-trellis2-pbr-bake-bench",
+            targets: ["KernelGoblinTrellis2PBRBenchmark"]
+        ),
     ],
     targets: [
         .target(
@@ -27,6 +31,11 @@ let package = Package(
             name: "KernelGoblinTrellis2DenseBenchmark",
             dependencies: ["KernelGoblinTrellis2"],
             path: "Benchmarks/KernelGoblinTrellis2Dense"
+        ),
+        .executableTarget(
+            name: "KernelGoblinTrellis2PBRBenchmark",
+            dependencies: ["KernelGoblinTrellis2"],
+            path: "Benchmarks/KernelGoblinTrellis2PBR"
         ),
         .testTarget(
             name: "KernelGoblinTrellis2Tests",

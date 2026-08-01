@@ -1,0 +1,27 @@
+{
+  "format": "KernelGoblin TRELLIS.2 sparse PBR sampler Torch oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "upstream_source": "o-voxel/o_voxel/postprocess.py",
+  "upstream_source_sha256": "ef51a1ba0f2748ffb4c265b47d382cee956f23c6a52d0f3587e6d8beccb7e54a",
+  "shim_source": "ports/trellis2/shims/flex_gemm/ops/grid_sample/grid_sample.py",
+  "shim_source_sha256": "87a6c7182bbfa5bf9deb713d003c1b972e7acc8e917d63257639c88856d55754",
+  "oracle_call": "grid_sample_3d(..., mode='trilinear')",
+  "torch_version": "2.13.0",
+  "device": "cpu",
+  "coordinate_generation": "reverse lexicographic 4^3 grid excluding (17x+7y+3z)%4==0",
+  "feature_generation": "sin(i*0.173)*0.75 + cos(i*0.071)*0.25, float32",
+  "query_generation": "37 deterministic affine modular positions",
+  "shape": [
+    1,
+    6,
+    4,
+    4,
+    4
+  ],
+  "output_shape": [
+    1,
+    37,
+    6
+  ],
+  "payload_sha256": "c08285dc3ac695b3a9810f1784ef645c187483c0ca3c469cd7e7954d1c2b5f22"
+}

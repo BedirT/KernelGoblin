@@ -1,0 +1,106 @@
+{
+  "format": "KernelGoblin OpenCV Telea uint8 oracle v1",
+  "opencv_version": "4.13.0",
+  "opencv_revision": "fe38fc608f6acb8b68953438a62305d8318f4fcd",
+  "source_path": "modules/photo/src/inpaint.cpp",
+  "source_sha256": "15c66e1f742fd8a08590996e80e06895c5355126bd9457ab613be03179019734",
+  "license": "Apache-2.0",
+  "cases": [
+    {
+      "name": "empty-mask-scalar",
+      "width": 5,
+      "height": 4,
+      "channels": 1,
+      "radius": 1,
+      "source": {
+        "offset": 0,
+        "length": 20
+      },
+      "mask": {
+        "offset": 20,
+        "length": 20
+      },
+      "expected": {
+        "offset": 40,
+        "length": 20
+      }
+    },
+    {
+      "name": "full-mask-scalar",
+      "width": 5,
+      "height": 4,
+      "channels": 1,
+      "radius": 1,
+      "source": {
+        "offset": 60,
+        "length": 20
+      },
+      "mask": {
+        "offset": 80,
+        "length": 20
+      },
+      "expected": {
+        "offset": 100,
+        "length": 20
+      }
+    },
+    {
+      "name": "symmetric-cross-scalar",
+      "width": 7,
+      "height": 7,
+      "channels": 1,
+      "radius": 1,
+      "source": {
+        "offset": 120,
+        "length": 49
+      },
+      "mask": {
+        "offset": 169,
+        "length": 49
+      },
+      "expected": {
+        "offset": 218,
+        "length": 49
+      }
+    },
+    {
+      "name": "border-disconnected-scalar",
+      "width": 8,
+      "height": 6,
+      "channels": 1,
+      "radius": 1,
+      "source": {
+        "offset": 267,
+        "length": 48
+      },
+      "mask": {
+        "offset": 315,
+        "length": 48
+      },
+      "expected": {
+        "offset": 363,
+        "length": 48
+      }
+    },
+    {
+      "name": "rgb-radius-three",
+      "width": 9,
+      "height": 7,
+      "channels": 3,
+      "radius": 3,
+      "source": {
+        "offset": 411,
+        "length": 189
+      },
+      "mask": {
+        "offset": 600,
+        "length": 63
+      },
+      "expected": {
+        "offset": 663,
+        "length": 189
+      }
+    }
+  ],
+  "payload_sha256": "b8d4df843c0b95b1f7b0d6a7deb712df81046eca05d59420ae0ab55432a684e1"
+}
