@@ -63,14 +63,18 @@ baseline is exactly what the native Metal runtime is here to replace.
 | TRELLIS 30-block texture flow | **Verified native Metal stage** | The separate pinned 2.58 GB texture checkpoint executes all 30 blocks with the real 64-channel noise-plus-shape input; final RMS error is `0.00733` |
 | Flow Euler + CFG orchestration | **Verified native Swift** | Exact 12-step schedule, interval CFG, rescaling, sequential positive/negative calls, shape and texture normalization, and real two-step checkpoint integrations |
 | Bounded Metal allocation | **Verified native foundation** | Heap-backed arena rejects overflow, records cumulative-requested/current/peak bytes, releases dead buffers, and covers both sampler-to-flow integrations |
-| Synchronized stage lifetime | **Verified native foundation** | DINO, shape, and texture sessions drain Metal, reach zero live arena bytes, destroy the arena, observe checkpoint `munmap`, and return standalone outputs |
+| Synchronized stage lifetime | **Verified native foundation** | DINO, sparse flow/decoder, shape, and texture sessions drain Metal, reach zero live arena bytes, destroy the arena, observe checkpoint `munmap`, and return standalone outputs |
+| Sparse-structure transformer block | **Verified native Metal slice** | Real block 0 from the pinned 2.58 GB dense-flow checkpoint matches its authenticated Torch BF16 trace, including 128-wide SIMD-group attention and 3D RoPE |
+| Sparse-structure 4,096-token flow | **Verified native production slice** | One complete sparse sampler step executes two CFG calls through all 30 blocks with the real 1,029-token context; model-call normalized RMS is at most `0.00923`, elapsed time is 92.5 s, and the bounded arena peaks at 525 MiB |
+| Sparse-structure occupancy decoder | **Verified native Metal stage** | All 74 real tensors execute at the production `16 -> 64` spatial shape; exact occupancy matches the authenticated MPS oracle, normalized RMS is `0.000181`, and the bounded arena peaks at 224 MiB |
+| Occupancy and coordinate extraction | **Verified native Swift** | Strict `> 0`, NaN/zero behavior, z-fast ordered coordinates, and exact 64-to-32 2x max pooling |
 | CPU mesh to flexible dual grid | **Verified reference extension** | Pinned O-Voxel algorithm through LibTorch, AppleClang portability patch, tetrahedron fixtures; native Swift bridge remains |
 | Sparse PBR sampling and glTF packing | **Verified reference component** | Bounded sampling, xatlas seams, RGBA and metallic-roughness packing, GLB reload; native assembly remains |
 | TRELLIS.2 512 image-to-3D | **Verified Torch/MPS oracle** | Default 12 steps, reloadable 61 MB GLB |
 | TRELLIS.2 1024 cascade | **Verified Torch/MPS oracle** | Default 12 steps, 15.28 GB maximum RSS, reloadable 272.8 MB GLB |
 | Full PBR image-to-3D | **In progress** | Native UV and synthetic bake pass; full model artifact still needs final end-to-end proof |
 | Existing-mesh texturing | **In progress** | CPU voxelizer, UV policy, staged reference CLI, and PBR baker exist; full native model path remains |
-| Swift + Metal full model | **In progress** | Complete DINO and both 30-block SLat flows pass; native image preprocessing, sparse structure, decoders, mesh extraction, and PBR assembly remain |
+| Swift + Metal full model | **In progress** | Complete DINO, both SLat flows, one production sparse step, and the production sparse decoder pass; the 12-step sparse trajectory, image preprocessing, shape/texture decoding, mesh extraction, and PBR assembly remain |
 
 That distinction matters. A kernel can be verified while a pipeline is still
 unfinished. We do not promote the larger claim just because a nearby test is

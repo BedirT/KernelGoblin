@@ -110,9 +110,7 @@ public final class AttentionKernel: @unchecked Sendable {
                 )
             }
         }
-        // DINOv3 uses D=64. Keep the established D=128 SLat reduction path
-        // until its production-token differential fixture is available.
-        let useSIMDGroup = dimensions == 64
+        let useSIMDGroup = (dimensions == 64 || dimensions == 128)
             && simdgroupPipeline.threadExecutionWidth == 32
             && simdgroupPipeline.maxTotalThreadsPerThreadgroup >= 256
         try context.runCompute(label: "fused attention") { encoder in

@@ -279,6 +279,53 @@ struct CheckpointTests {
         #expect(throws: CheckpointError.self) { try SafeTensorsIndex.read(from: url) }
     }
 
+    @Test("sparse occupancy uses strict threshold, z-fast coordinates, and 2x max pooling")
+    func sparseOccupancyContract() throws {
+        var logits = [Float](repeating: -.infinity, count: 64 * 64 * 64)
+        func index(_ x: Int, _ y: Int, _ z: Int) -> Int {
+            (x * 64 + y) * 64 + z
+        }
+        logits[index(0, 0, 0)] = 1
+        logits[index(1, 1, 1)] = .infinity
+        logits[index(1, 1, 2)] = .nan
+        logits[index(2, 3, 4)] = 0
+        logits[index(2, 3, 5)] = -0.0
+        logits[index(63, 63, 63)] = 0.25
+        let grid = try SparseStructureOccupancy.threshold(
+            logits: logits, resolution: 64
+        )
+        #expect(grid.contains(x: 0, y: 0, z: 0))
+        #expect(grid.contains(x: 1, y: 1, z: 1))
+        #expect(!grid.contains(x: 1, y: 1, z: 2))
+        #expect(!grid.contains(x: 2, y: 3, z: 4))
+        #expect(!grid.contains(x: 2, y: 3, z: 5))
+        #expect(grid.contains(x: 63, y: 63, z: 63))
+        #expect(grid.coordinates() == [
+            SparseStructureCoordinate(x: 0, y: 0, z: 0),
+            SparseStructureCoordinate(x: 1, y: 1, z: 1),
+            SparseStructureCoordinate(x: 63, y: 63, z: 63),
+        ])
+
+        let pooled = try SparseStructureOccupancy.downsampleMax2(grid)
+        #expect(pooled.resolution == 32)
+        #expect(pooled.coordinates() == [
+            SparseStructureCoordinate(x: 0, y: 0, z: 0),
+            SparseStructureCoordinate(x: 31, y: 31, z: 31),
+        ])
+        #expect(try SparseStructureOccupancy.threshold(
+            logits: [Float](repeating: -1, count: 8), resolution: 2
+        ).coordinates().isEmpty)
+        #expect(try SparseStructureOccupancy.threshold(
+            logits: [Float](repeating: 1, count: 8), resolution: 2
+        ).coordinates().count == 8)
+        #expect(throws: NativeRuntimeError.self) {
+            try SparseStructureOccupancy.threshold(logits: [], resolution: 64)
+        }
+        #expect(throws: NativeRuntimeError.self) {
+            try SparseOccupancyGrid(resolution: Int.max, packedBits: [])
+        }
+    }
+
     @Test("safetensors rejects non-integer dimensions and overlapping ranges")
     func rejectsMalformedMetadata() throws {
         let cases: [[String: Any]] = [
@@ -593,6 +640,164 @@ struct CheckpointTests {
         }
     }
 
+    @Test("Metal voxel-major Conv3D matches F32 and F16 CPU references")
+    func sparseStructureConv3D() throws {
+        let context = try MetalContext()
+        let kernel = try SparseStructureKernel(context: context)
+        let resolution = 3, inputChannels = 2, outputChannels = 2
+        let inputCount = resolution * resolution * resolution * inputChannels
+        var inputValues = (0..<inputCount).map {
+            Float(sin(Double($0) * 0.17) * 0.4)
+        }
+        let weightCount = outputChannels * inputChannels * 3 * 3 * 3
+        let f32Weights = (0..<weightCount).map {
+            Float(cos(Double($0) * 0.11) * 0.2)
+        }
+        let f32Bias: [Float] = [0.125, -0.25]
+        var f32Checkpoint = f32Weights
+        f32Checkpoint.append(contentsOf: f32Bias)
+        let f16Weights = f32Weights.map(Float16.init)
+        let f16Bias = f32Bias.map(Float16.init)
+        var f16Checkpoint = f16Weights
+        f16Checkpoint.append(contentsOf: f16Bias)
+        let input = try #require(context.device.makeBuffer(
+            bytes: &inputValues, length: inputValues.count * 4,
+            options: .storageModeShared
+        ))
+        let f32CheckpointBuffer = try #require(context.device.makeBuffer(
+            bytes: &f32Checkpoint, length: f32Checkpoint.count * 4,
+            options: .storageModeShared
+        ))
+        let f16CheckpointBuffer = try #require(context.device.makeBuffer(
+            bytes: &f16Checkpoint, length: f16Checkpoint.count * 2,
+            options: .storageModeShared
+        ))
+        let outputCount = resolution * resolution * resolution * outputChannels
+        let f32Output = try #require(context.device.makeBuffer(
+            length: outputCount * 4, options: .storageModeShared
+        ))
+        let f16Output = try #require(context.device.makeBuffer(
+            length: outputCount * 4, options: .storageModeShared
+        ))
+        try kernel.conv3DF32(
+            input: input, checkpoint: f32CheckpointBuffer,
+            weightOffset: 0, biasOffset: weightCount * 4,
+            inputResolution: resolution, inputChannels: inputChannels,
+            outputChannels: outputChannels, weightType: .f32, output: f32Output
+        )
+        try kernel.conv3DF32(
+            input: input, checkpoint: f16CheckpointBuffer,
+            weightOffset: 0, biasOffset: weightCount * 2,
+            inputResolution: resolution, inputChannels: inputChannels,
+            outputChannels: outputChannels, weightType: .f16, output: f16Output
+        )
+        #expect(throws: NativeRuntimeError.self) {
+            try kernel.conv3DF32(
+                input: input, checkpoint: f32CheckpointBuffer,
+                weightOffset: 0, biasOffset: weightCount * 4,
+                inputResolution: resolution, inputChannels: inputChannels,
+                outputChannels: outputChannels, padding: Int.max,
+                weightType: .f32, output: f32Output
+            )
+        }
+        let actualF32 = f32Output.contents().assumingMemoryBound(to: Float.self)
+        let actualF16 = f16Output.contents().assumingMemoryBound(to: Float.self)
+        for x in 0..<resolution {
+            for y in 0..<resolution {
+                for z in 0..<resolution {
+                    for outputChannel in 0..<outputChannels {
+                        var expectedF32 = f32Bias[outputChannel]
+                        var expectedF16 = Float(f16Bias[outputChannel])
+                        for inputChannel in 0..<inputChannels {
+                            for kx in 0..<3 {
+                                let ix = x + kx - 1
+                                guard ix >= 0, ix < resolution else { continue }
+                                for ky in 0..<3 {
+                                    let iy = y + ky - 1
+                                    guard iy >= 0, iy < resolution else { continue }
+                                    for kz in 0..<3 {
+                                        let iz = z + kz - 1
+                                        guard iz >= 0, iz < resolution else { continue }
+                                        let inputIndex = ((ix * resolution + iy) * resolution
+                                            + iz) * inputChannels + inputChannel
+                                        let weightIndex = ((((outputChannel * inputChannels
+                                            + inputChannel) * 3 + kx) * 3 + ky) * 3 + kz)
+                                        expectedF32.addProduct(
+                                            inputValues[inputIndex], f32Weights[weightIndex]
+                                        )
+                                        expectedF16.addProduct(
+                                            inputValues[inputIndex], Float(f16Weights[weightIndex])
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        let outputIndex = ((x * resolution + y) * resolution + z)
+                            * outputChannels + outputChannel
+                        #expect(abs(actualF32[outputIndex] - expectedF32) < 2e-6)
+                        #expect(abs(actualF16[outputIndex] - expectedF16) < 2e-6)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test("Metal F16 boundary and PixelShuffle3D preserve exact decoder layout")
+    func sparseStructureF16AndPixelShuffle() throws {
+        let context = try MetalContext()
+        let kernel = try SparseStructureKernel(context: context)
+        var values: [Float] = [
+            1.0001, -2.0009, Float.leastNonzeroMagnitude, .infinity, -.infinity,
+        ]
+        let input = try #require(context.device.makeBuffer(
+            bytes: &values, length: values.count * 4, options: .storageModeShared
+        ))
+        let rounded = try #require(context.device.makeBuffer(
+            length: values.count * 4, options: .storageModeShared
+        ))
+        try kernel.roundF16F32(input: input, count: values.count, output: rounded)
+        let actualRounded = rounded.contents().assumingMemoryBound(to: Float.self)
+        for index in values.indices {
+            #expect(actualRounded[index].bitPattern == Float(Float16(values[index])).bitPattern)
+        }
+
+        let inputResolution = 2, outputChannels = 2, factor = 2
+        let inputChannels = outputChannels * factor * factor * factor
+        var shuffledInput = (0..<(inputResolution * inputResolution * inputResolution
+            * inputChannels)).map(Float.init)
+        let shuffledInputBuffer = try #require(context.device.makeBuffer(
+            bytes: &shuffledInput, length: shuffledInput.count * 4,
+            options: .storageModeShared
+        ))
+        let outputResolution = inputResolution * factor
+        let shuffledOutput = try #require(context.device.makeBuffer(
+            length: outputResolution * outputResolution * outputResolution
+                * outputChannels * 4,
+            options: .storageModeShared
+        ))
+        try kernel.pixelShuffle3DF32(
+            input: shuffledInputBuffer, inputResolution: inputResolution,
+            outputChannels: outputChannels, factor: factor, output: shuffledOutput
+        )
+        let actual = shuffledOutput.contents().assumingMemoryBound(to: Float.self)
+        for x in 0..<outputResolution {
+            for y in 0..<outputResolution {
+                for z in 0..<outputResolution {
+                    for channel in 0..<outputChannels {
+                        let inputVoxel = ((x / factor * inputResolution + y / factor)
+                            * inputResolution + z / factor)
+                        let shuffledChannel = channel * factor * factor * factor
+                            + ((x % factor) * factor + y % factor) * factor + z % factor
+                        let expected = shuffledInput[inputVoxel * inputChannels + shuffledChannel]
+                        let outputIndex = ((x * outputResolution + y) * outputResolution + z)
+                            * outputChannels + channel
+                        #expect(actual[outputIndex] == expected)
+                    }
+                }
+            }
+        }
+    }
+
     @Test("Metal fused self and cross attention match stable CPU softmax")
     func fusedAttention() throws {
         let context = try MetalContext()
@@ -749,15 +954,77 @@ struct CheckpointTests {
         }
     }
 
+    @Test("Metal SIMD-group attention matches 128-wide sparse-structure heads")
+    func simdgroupAttention128() throws {
+        let context = try MetalContext()
+        let kernel = try AttentionKernel(context: context)
+        let queryCount = 17, keyCount = 19, heads = 3, dimensions = 128
+        var queries = (0..<(queryCount * heads * dimensions)).map {
+            Float(sin(Double($0) * 0.013) * 0.4)
+        }
+        var keys = (0..<(keyCount * heads * dimensions)).map {
+            Float(cos(Double($0) * 0.017) * 0.35)
+        }
+        var values = (0..<(keyCount * heads * dimensions)).map {
+            Float(sin(Double($0) * 0.019) * 0.3 - 0.1)
+        }
+        let queryBuffer = try #require(context.device.makeBuffer(
+            bytes: &queries, length: queries.count * 4, options: .storageModeShared
+        ))
+        let keyBuffer = try #require(context.device.makeBuffer(
+            bytes: &keys, length: keys.count * 4, options: .storageModeShared
+        ))
+        let valueBuffer = try #require(context.device.makeBuffer(
+            bytes: &values, length: values.count * 4, options: .storageModeShared
+        ))
+        let output = try #require(context.device.makeBuffer(
+            length: queries.count * 4, options: .storageModeShared
+        ))
+        try kernel.fusedF32(
+            queries: queryBuffer, keys: keyBuffer, values: valueBuffer,
+            queryCount: queryCount, keyCount: keyCount, heads: heads,
+            dimensions: dimensions, output: output
+        )
+        let actual = output.contents().assumingMemoryBound(to: Float.self)
+        let scale = 1 / sqrt(Float(dimensions))
+        for query in 0..<queryCount {
+            for head in 0..<heads {
+                let queryBase = (query * heads + head) * dimensions
+                var scores = [Float](repeating: 0, count: keyCount)
+                for key in 0..<keyCount {
+                    let keyBase = (key * heads + head) * dimensions
+                    for dimension in 0..<dimensions {
+                        scores[key].addProduct(
+                            queries[queryBase + dimension], keys[keyBase + dimension]
+                        )
+                    }
+                    scores[key] *= scale
+                }
+                let maximum = scores.max()!
+                let weights = scores.map { exp($0 - maximum) }
+                let denominator = weights.reduce(0, +)
+                for dimension in 0..<dimensions {
+                    var expected: Float = 0
+                    for key in 0..<keyCount {
+                        let keyBase = (key * heads + head) * dimensions
+                        expected += weights[key] / denominator
+                            * values[keyBase + dimension]
+                    }
+                    #expect(abs(actual[queryBase + dimension] - expected) < 5e-6)
+                }
+            }
+        }
+    }
+
     @Test("native sparse Flow Euler and CFG match the pinned Torch oracle")
     func sparseFlowEuler() throws {
         let context = try MetalContext()
-        let parameters = try FlowEulerParameters.shape512()
+        let parameters = try FlowEulerParameters.sparseStructure512()
         let expectedSchedule = [
-            1.0, 0.9705882352941178, 0.9374999999999999, 0.9,
-            0.8571428571428571, 0.8076923076923076, 0.75,
-            0.6818181818181819, 0.6, 0.5, 0.3750000000000001,
-            0.21428571428571436, 0.0,
+            1.0, 0.9821428571428572, 0.9615384615384615, 0.9375,
+            0.9090909090909092, 0.875, 0.8333333333333334,
+            0.7812500000000001, 0.7142857142857144, 0.625,
+            0.5000000000000001, 0.3125000000000001, 0.0,
         ]
         let schedule = parameters.schedule()
         try #require(schedule.count == 12)
@@ -816,12 +1083,12 @@ struct CheckpointTests {
                 return output
             }
         )
-        #expect(result.modelCallCount == 21)
-        #expect(calls.count == 21)
-        for index in 0..<18 {
+        #expect(result.modelCallCount == 22)
+        #expect(calls.count == 22)
+        for index in 0..<20 {
             #expect(calls[index].0 == (index.isMultiple(of: 2) ? "positive" : "negative"))
         }
-        for index in 18..<21 { #expect(calls[index].0 == "positive") }
+        for index in 20..<22 { #expect(calls[index].0 == "positive") }
 
         let fixtureURL = try #require(Bundle.module.url(
             forResource: "flow-euler-sparse", withExtension: "f32",
@@ -829,7 +1096,7 @@ struct CheckpointTests {
         ))
         try #require(
             fileSHA256(at: fixtureURL) ==
-                "4a104bffebb6e6164732f12d8f186dbd9fbd5b99889623c6f842703c7c9b3c47"
+                "c91f49c9ad4682abc9b754fea7d210f26da32741839ac1ea3680050f70fa4f4d"
         )
         let golden = try Data(contentsOf: fixtureURL).withUnsafeBytes {
             Array($0.bindMemory(to: Float.self))
@@ -845,7 +1112,7 @@ struct CheckpointTests {
         ))
         try #require(
             fileSHA256(at: traceURL) ==
-                "c39475758c9f4bdebe1de863d4a5a5346f5724f7c81e09e3d7adbe5a53eef00d"
+                "ab6be0a656f73539e6faff1ca47fa63c949a9af29300914f6a000a5c6699c796"
         )
         let trace = try Data(contentsOf: traceURL).withUnsafeBytes {
             Array($0.bindMemory(to: Float.self))
@@ -1756,6 +2023,363 @@ struct CheckpointTests {
     }
 
     @Test(
+        "real sparse-structure block matches the pinned dense Torch oracle",
+        .enabled(
+            if: ProcessInfo.processInfo.environment[
+                "KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT"
+            ] != nil,
+            "Set KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT for real-weight conformance"
+        )
+    )
+    func realSparseStructureBlockGolden() throws {
+        let path = try #require(ProcessInfo.processInfo.environment[
+            "KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT"
+        ])
+        let context = try MetalContext()
+        let checkpoint = try MappedCheckpoint(
+            url: URL(fileURLWithPath: path), device: context.device
+        )
+        try #require(
+            checkpoint.sha256() ==
+                "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6"
+        )
+        let tokens = 2
+        let stageElements = tokens * 1536
+        var features = (0..<stageElements).map {
+            fromBF16(roundedBF16(Float(sin(Double($0) * 0.013) * 0.35)))
+        }
+        var modulationValues = (0..<9216).map {
+            fromBF16(roundedBF16(Float(sin(Double($0) * 0.007) * 0.2)))
+        }
+        var conditioningValues = (0..<(2 * 1024)).map {
+            fromBF16(roundedBF16(Float(sin(Double($0) * 0.015) * 0.25)))
+        }
+        var coordinateValues: [Int32] = [0, 0, 0, 0, 0, 0, 0, 1]
+        let featureBuffer = try #require(context.device.makeBuffer(
+            bytes: &features, length: features.count * 4, options: .storageModeShared
+        ))
+        let modulationBuffer = try #require(context.device.makeBuffer(
+            bytes: &modulationValues, length: modulationValues.count * 4,
+            options: .storageModeShared
+        ))
+        let conditioningBuffer = try #require(context.device.makeBuffer(
+            bytes: &conditioningValues, length: conditioningValues.count * 4,
+            options: .storageModeShared
+        ))
+        let coordinateBuffer = try #require(context.device.makeBuffer(
+            bytes: &coordinateValues, length: coordinateValues.count * 4,
+            options: .storageModeShared
+        ))
+        var traces: [String: MTLBuffer] = [:]
+        let output = try SLatBlock(context: context).forwardF32(
+            input: featureBuffer, sharedModulation: modulationBuffer,
+            conditioning: conditioningBuffer, checkpoint: checkpoint,
+            block: 0, tokens: tokens, conditioningTokens: 2,
+            coordinates: coordinateBuffer,
+            trace: { name, buffer in traces[name] = buffer }
+        )
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "ss-block0-tiny", withExtension: "bf16",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: fixtureURL) ==
+                "f1f436bdfd034e90cc968ae8bee17b96b35d9ad30d605ecf4eba2d7e209adf3e"
+        )
+        let expected = try Data(contentsOf: fixtureURL).withUnsafeBytes {
+            Array($0.bindMemory(to: UInt16.self))
+        }
+        try #require(expected.count == stageElements)
+        let actual = output.contents().assumingMemoryBound(to: Float.self)
+        var maximumError: Float = 0
+        var maximumMixedToleranceRatio: Float = 0
+        var squaredError: Double = 0
+        var expectedSquaredMagnitude: Double = 0
+        for index in expected.indices {
+            try #require(actual[index].isFinite)
+            let expectedValue = fromBF16(UInt16(littleEndian: expected[index]))
+            let error = abs(actual[index] - expectedValue)
+            maximumError = max(maximumError, error)
+            squaredError += Double(error * error)
+            expectedSquaredMagnitude += Double(expectedValue * expectedValue)
+            maximumMixedToleranceRatio = max(
+                maximumMixedToleranceRatio,
+                error / (0.25 + 0.008 * abs(expectedValue))
+            )
+        }
+        let rms = sqrt(squaredError / Double(expected.count))
+        let expectedRMS = sqrt(expectedSquaredMagnitude / Double(expected.count))
+        let normalizedRMS = rms / expectedRMS
+        print(
+            "sparse-structure block: max=\(maximumError) rms=\(rms) " +
+                "normalized_rms=\(normalizedRMS) mixed_ratio=\(maximumMixedToleranceRatio)"
+        )
+        // BF16 contributes one 0.78125% relative ULP per rounded projection;
+        // the absolute floor covers cancellation near zero after residuals.
+        #expect(maximumMixedToleranceRatio <= 1)
+        #expect(normalizedRMS <= 0.002)
+
+        let traceURL = try #require(Bundle.module.url(
+            forResource: "ss-block0-tiny", withExtension: "bf16.trace",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: traceURL) ==
+                "1df17f811f4b20e74b6c2e615c415ec8a63db112a7aa0365c0098af4797f3bac"
+        )
+        let trace = try Data(contentsOf: traceURL).withUnsafeBytes {
+            Array($0.bindMemory(to: UInt16.self))
+        }
+        let stages: [(String, Int)] = [
+            ("norm1", stageElements), ("self_input", stageElements),
+            ("self_output", stageElements), ("after_self", stageElements),
+            ("norm2", stageElements), ("cross_output", stageElements),
+            ("after_cross", stageElements), ("norm3", stageElements),
+            ("mlp_input", stageElements), ("mlp_hidden_linear", tokens * 8192),
+            ("mlp_hidden_gelu", tokens * 8192), ("mlp_output", stageElements),
+            ("output", stageElements),
+        ]
+        try #require(trace.count == stages.reduce(0) { $0 + $1.1 })
+        var offset = 0
+        for (name, count) in stages {
+            let values = try #require(traces[name]).contents()
+                .assumingMemoryBound(to: Float.self)
+            var stageMaximum: Float = 0
+            var stageMixedToleranceRatio: Float = 0
+            var stageSquaredError: Double = 0
+            var stageExpectedSquaredMagnitude: Double = 0
+            for index in 0..<count {
+                try #require(values[index].isFinite)
+                let expectedValue = fromBF16(UInt16(littleEndian: trace[offset + index]))
+                let error = abs(values[index] - expectedValue)
+                stageMaximum = max(stageMaximum, error)
+                stageSquaredError += Double(error * error)
+                stageExpectedSquaredMagnitude += Double(expectedValue * expectedValue)
+                stageMixedToleranceRatio = max(
+                    stageMixedToleranceRatio,
+                    error / (0.25 + 0.008 * abs(expectedValue))
+                )
+            }
+            offset += count
+            let stageRMS = sqrt(stageSquaredError / Double(count))
+            let stageExpectedRMS = sqrt(stageExpectedSquaredMagnitude / Double(count))
+            let stageNormalizedRMS = stageRMS / max(stageExpectedRMS, 1e-12)
+            print(
+                "sparse_trace=\(name) max=\(stageMaximum) rms=\(stageRMS) " +
+                    "normalized_rms=\(stageNormalizedRMS) " +
+                    "mixed_ratio=\(stageMixedToleranceRatio)"
+            )
+            #expect(stageMixedToleranceRatio <= 1)
+            #expect(stageNormalizedRMS <= 0.002)
+        }
+    }
+
+    @Test(
+        "production sparse-structure sampler runs 4,096 tokens through all 30 blocks",
+        .enabled(
+            if: ProcessInfo.processInfo.environment[
+                "KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT"
+            ] != nil,
+            "Set KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT for real-weight conformance"
+        )
+    )
+    func realSparseStructureSamplerProductionGolden() throws {
+        let path = try #require(ProcessInfo.processInfo.environment[
+            "KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT"
+        ])
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "ss-sampler-r16-1step-mps", withExtension: "f32",
+            subdirectory: "Fixtures"
+        ))
+        try #require(
+            fileSHA256(at: fixtureURL) ==
+                "9c7cd37e4c3abe1575ba93b1afbb3bee12e8d5295d8905a113bd13a2f0b50936"
+        )
+        let metadataURL = fixtureURL.appendingPathExtension("json")
+        try #require(
+            fileSHA256(at: metadataURL) ==
+                "ca3384b3c46b8ca32d578ebd87212412d51e31fca32d8bf787902df015caaac9"
+        )
+        let metadata = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL))
+                as? [String: Any]
+        )
+        #expect(metadata["source_revision"] as? String ==
+            "75fbf0183001ed9876c8dbb35de6b68552ee08bd")
+        #expect(metadata["weight_revision"] as? String ==
+            "af44b45f2e35a493886929c6d786e563ec68364d")
+        #expect(metadata["weight_sha256"] as? String ==
+            "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6")
+        #expect(metadata["payload_sha256"] as? String ==
+            "9c7cd37e4c3abe1575ba93b1afbb3bee12e8d5295d8905a113bd13a2f0b50936")
+        #expect(metadata["tokens"] as? Int == 4096)
+        #expect(metadata["context_tokens"] as? Int == 1029)
+        #expect(metadata["steps"] as? Int == 1)
+        #expect(metadata["model_calls"] as? Int == 2)
+        let fixture = try Data(contentsOf: fixtureURL).withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))
+        }
+        let tokens = 16 * 16 * 16
+        let latentCount = tokens * 8
+        let contextTokens = 1029
+        let contextCount = contextTokens * 1024
+        try #require(fixture.count == latentCount * 4 + contextCount)
+        var noise = Array(fixture[0..<latentCount])
+        var positive = Array(fixture[latentCount..<(latentCount + contextCount)])
+        var negative = [Float](repeating: 0, count: contextCount)
+        let traceStart = latentCount + contextCount
+        let expectedTrace = Array(fixture[traceStart..<(traceStart + latentCount * 2)])
+        let expectedOutput = Array(fixture[(traceStart + latentCount * 2)...])
+
+        var lifecycle: [StageLifecycleEvent] = []
+        let session = try StageSession(
+            checkpointURL: URL(fileURLWithPath: path),
+            expectedCheckpointSHA256:
+                "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6",
+            arenaCapacity: 768 * 1024 * 1024,
+            lifecycleObserver: { lifecycle.append($0) }
+        )
+        let noiseBuffer = try #require(session.device.makeBuffer(
+            bytes: &noise, length: noise.count * 4, options: .storageModeShared
+        ))
+        let positiveBuffer = try #require(session.device.makeBuffer(
+            bytes: &positive, length: positive.count * 4, options: .storageModeShared
+        ))
+        let negativeBuffer = try #require(session.device.makeBuffer(
+            bytes: &negative, length: negative.count * 4, options: .storageModeShared
+        ))
+        var traces: [[Float]] = []
+        let started = ContinuousClock.now
+        let result = try session.sampleSparseStructureF32(
+            noise: noiseBuffer,
+            positiveConditioning: positiveBuffer,
+            negativeConditioning: negativeBuffer,
+            conditioningTokens: contextTokens,
+            parameters: .sparseStructure512(steps: 1),
+            modelTrace: { call, pass, values in
+                #expect(call == traces.count)
+                #expect(pass == (call == 0 ? .positive : .negative))
+                traces.append(values)
+            }
+        )
+        let elapsed = started.duration(to: .now)
+        #expect(result.modelCallCount == 2)
+        try #require(traces.count == 2)
+        let memory = try session.close()
+        #expect(memory.usedBytes == 0)
+        // The measured M3 Pro peak is 550,400,008 bytes. Keep roughly 14%
+        // alignment/device headroom without allowing growth to the arena cap.
+        #expect(memory.peakUsedBytes <= 600 * 1024 * 1024)
+        #expect(lifecycle == [.queueDrained, .arenaReleased, .checkpointUnmapped])
+
+        for call in 0..<2 {
+            let expected = Array(
+                expectedTrace[(call * latentCount)..<((call + 1) * latentCount)]
+            )
+            let metrics = try compareFixtureValues(actual: traces[call], expected: expected)
+            print(
+                "sparse sampler call \(call): max=\(metrics.maximumError) " +
+                    "rms=\(metrics.rms) normalized_rms=\(metrics.normalizedRMS) " +
+                    "max_scale_ratio=\(metrics.maximumScaleRatio)"
+            )
+            #expect(metrics.normalizedRMS <= 0.05)
+            #expect(metrics.maximumScaleRatio <= 0.10)
+        }
+        let actualOutput = result.latent.contents().assumingMemoryBound(to: Float.self)
+        let actualValues = (0..<latentCount).map { actualOutput[$0] }
+        let expectedFromNativeCalls = oneStepSparseSamplerReference(
+            noise: noise, positive: traces[0], negative: traces[1]
+        )
+        let orchestrationMetrics = try compareFixtureValues(
+            actual: actualValues, expected: expectedFromNativeCalls
+        )
+        #expect(orchestrationMetrics.maximumError <= 1e-6)
+        let finalMetrics = try compareFixtureValues(
+            actual: actualValues, expected: expectedOutput
+        )
+        print(
+            "sparse sampler production: max=\(finalMetrics.maximumError) " +
+                "rms=\(finalMetrics.rms) normalized_rms=\(finalMetrics.normalizedRMS) " +
+                "max_scale_ratio=\(finalMetrics.maximumScaleRatio) " +
+                "elapsed=\(elapsed) arena_peak=\(memory.peakUsedBytes)"
+        )
+        // CFG multiplies the two independently bounded model errors by 7.5
+        // and -6.5 before rescaling. Absolute bounds are meaningful here;
+        // normalized error is unstable because the one-step result is close
+        // to zero after subtracting the guided velocity from the input noise.
+        #expect(finalMetrics.maximumError <= 0.25)
+        #expect(finalMetrics.rms <= 0.05)
+    }
+
+    @Test(
+        "real sparse-structure decoder executes every pinned weight on Metal",
+        .enabled(
+            if: ProcessInfo.processInfo.environment[
+                "KG_TRELLIS2_SPARSE_STRUCTURE_DECODER_CHECKPOINT"
+            ] != nil,
+            "Set KG_TRELLIS2_SPARSE_STRUCTURE_DECODER_CHECKPOINT for decoder conformance"
+        )
+    )
+    func realSparseStructureDecoderGolden() throws {
+        let path = try #require(ProcessInfo.processInfo.environment[
+            "KG_TRELLIS2_SPARSE_STRUCTURE_DECODER_CHECKPOINT"
+        ])
+        let metrics = try verifySparseStructureDecoderFixture(
+            checkpointPath: path,
+            fixtureName: "ss-decoder-r2",
+            fixtureSHA256:
+                "e5fb37ddf9086981afec269c55f53ca6dac76a182c0adcb1edd4fe2dd6b0f8b3",
+            metadataSHA256:
+                "ec1219d2162c6471d87e4a37bc5c69feebf34845095372c718e7ddd7bb3c1af3",
+            inputResolution: 2,
+            arenaCapacity: 64 * 1024 * 1024
+        )
+        print(
+            "sparse decoder r2: max=\(metrics.maximumError) rms=\(metrics.rms) " +
+                "normalized_rms=\(metrics.normalizedRMS) " +
+                "mixed_ratio=\(metrics.maximumMixedToleranceRatio) " +
+                "arena_peak=\(metrics.arenaPeakBytes)"
+        )
+        #expect(metrics.maximumMixedToleranceRatio <= 1)
+        #expect(metrics.normalizedRMS <= 0.001)
+    }
+
+    @Test(
+        "production sparse-structure decoder executes 16-to-64 on Metal",
+        .enabled(
+            if: ProcessInfo.processInfo.environment[
+                "KG_TRELLIS2_SPARSE_STRUCTURE_DECODER_CHECKPOINT"
+            ] != nil,
+            "Set KG_TRELLIS2_SPARSE_STRUCTURE_DECODER_CHECKPOINT for decoder conformance"
+        )
+    )
+    func realSparseStructureDecoderProductionGolden() throws {
+        let path = try #require(ProcessInfo.processInfo.environment[
+            "KG_TRELLIS2_SPARSE_STRUCTURE_DECODER_CHECKPOINT"
+        ])
+        let metrics = try verifySparseStructureDecoderFixture(
+            checkpointPath: path,
+            fixtureName: "ss-decoder-r16-mps",
+            fixtureSHA256:
+                "904b84bf376e2cf09c1a0bb483e6d9776aeb6a7d0af9523257ceb20d2cd18b2e",
+            metadataSHA256:
+                "5ab8d1d09fa2f8ae4185e3eb530c40bec840d9d79a03c6d14d08a074bc19fe88",
+            inputResolution: 16,
+            arenaCapacity: 512 * 1024 * 1024
+        )
+        print(
+            "sparse decoder r16: max=\(metrics.maximumError) rms=\(metrics.rms) " +
+                "normalized_rms=\(metrics.normalizedRMS) " +
+                "mixed_ratio=\(metrics.maximumMixedToleranceRatio) " +
+                "arena_peak=\(metrics.arenaPeakBytes)"
+        )
+        // The relative term is one F16 ULP; the absolute floor covers
+        // cancellation across ten residual/Conv3D blocks near zero.
+        #expect(metrics.maximumMixedToleranceRatio <= 1)
+        #expect(metrics.normalizedRMS <= 0.001)
+    }
+
+    @Test(
         "real TRELLIS.2 RoPE block matches the pinned Torch BF16 oracle",
         .enabled(
             if: ProcessInfo.processInfo.environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"] != nil,
@@ -1905,6 +2529,185 @@ struct CheckpointTests {
         #expect(maximumAbsoluteError <= 0.25)
         #expect(rootMeanSquareError <= 0.02)
     }
+}
+
+private struct SparseStructureDecoderMetrics {
+    let maximumError: Float
+    let rms: Double
+    let normalizedRMS: Double
+    let maximumMixedToleranceRatio: Float
+    let arenaPeakBytes: Int
+}
+
+private struct FixtureComparisonMetrics {
+    let maximumError: Float
+    let rms: Double
+    let normalizedRMS: Double
+    let maximumScaleRatio: Float
+}
+
+private func compareFixtureValues(
+    actual: [Float], expected: [Float]
+) throws -> FixtureComparisonMetrics {
+    try #require(actual.count == expected.count && !expected.isEmpty)
+    var maximumError: Float = 0
+    var maximumMagnitude: Float = 0
+    var squaredError: Double = 0
+    var expectedSquaredMagnitude: Double = 0
+    for index in expected.indices {
+        try #require(actual[index].isFinite)
+        let error = abs(actual[index] - expected[index])
+        maximumError = max(maximumError, error)
+        maximumMagnitude = max(maximumMagnitude, abs(expected[index]))
+        squaredError += Double(error * error)
+        expectedSquaredMagnitude += Double(expected[index] * expected[index])
+    }
+    let rms = sqrt(squaredError / Double(expected.count))
+    let expectedRMS = sqrt(expectedSquaredMagnitude / Double(expected.count))
+    return FixtureComparisonMetrics(
+        maximumError: maximumError,
+        rms: rms,
+        normalizedRMS: rms / max(expectedRMS, 1e-12),
+        maximumScaleRatio: maximumError / max(maximumMagnitude, 1e-12)
+    )
+}
+
+private func oneStepSparseSamplerReference(
+    noise: [Float], positive: [Float], negative: [Float]
+) -> [Float] {
+    precondition(noise.count == positive.count && positive.count == negative.count)
+    let stateScale: Float = 1 - 1e-5
+    let sigmaScale: Float = 1
+    let strength: Float = 7.5
+    var guided = [Float](repeating: 0, count: noise.count)
+    var positiveSum: Float = 0
+    var positiveSquareSum: Float = 0
+    var guidedSum: Float = 0
+    var guidedSquareSum: Float = 0
+    for index in noise.indices {
+        guided[index] = strength * positive[index] + (1 - strength) * negative[index]
+        let positiveX0 = stateScale * noise[index] - sigmaScale * positive[index]
+        let guidedX0 = stateScale * noise[index] - sigmaScale * guided[index]
+        positiveSum += positiveX0
+        positiveSquareSum += positiveX0 * positiveX0
+        guidedSum += guidedX0
+        guidedSquareSum += guidedX0 * guidedX0
+    }
+    let count = Float(noise.count)
+    let positiveMean = positiveSum / count
+    let guidedMean = guidedSum / count
+    let positiveStandardDeviation = sqrt(
+        positiveSquareSum / count - positiveMean * positiveMean
+    )
+    let guidedStandardDeviation = sqrt(
+        guidedSquareSum / count - guidedMean * guidedMean
+    )
+    let ratio = positiveStandardDeviation / guidedStandardDeviation
+    for index in noise.indices {
+        let guidedX0 = stateScale * noise[index] - sigmaScale * guided[index]
+        let rescaledX0 = guidedX0 * ratio
+        let blendedX0: Float = 0.7 * rescaledX0 + 0.3 * guidedX0
+        let velocity = (stateScale * noise[index] - blendedX0) / sigmaScale
+        guided[index] = noise[index] - velocity
+    }
+    return guided
+}
+
+private func verifySparseStructureDecoderFixture(
+    checkpointPath: String,
+    fixtureName: String,
+    fixtureSHA256: String,
+    metadataSHA256: String,
+    inputResolution: Int,
+    arenaCapacity: Int
+) throws -> SparseStructureDecoderMetrics {
+    let fixtureURL = try #require(Bundle.module.url(
+        forResource: fixtureName, withExtension: "f32", subdirectory: "Fixtures"
+    ))
+    try #require(fileSHA256(at: fixtureURL) == fixtureSHA256)
+    let metadataURL = fixtureURL.appendingPathExtension("json")
+    try #require(fileSHA256(at: metadataURL) == metadataSHA256)
+    let metadata = try #require(
+        JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL))
+            as? [String: Any]
+    )
+    #expect(metadata["source_revision"] as? String ==
+        "75fbf0183001ed9876c8dbb35de6b68552ee08bd")
+    #expect(metadata["weight_revision"] as? String ==
+        "25e0d31ffbebe4b5a97464dd851910efc3002d96")
+    #expect(metadata["weight_sha256"] as? String ==
+        "1c76d4a40519aa2d711cc263a8404105231ac26db31d946bed48b84fee79009a")
+    #expect(metadata["payload_sha256"] as? String == fixtureSHA256)
+    #expect(metadata["input_resolution"] as? Int == inputResolution)
+    #expect(metadata["output_resolution"] as? Int == inputResolution * 4)
+    let fixture = try Data(contentsOf: fixtureURL).withUnsafeBytes {
+        Array($0.bindMemory(to: Float.self))
+    }
+    let inputVoxels = inputResolution * inputResolution * inputResolution
+    let outputResolution = inputResolution * 4
+    let outputVoxels = outputResolution * outputResolution * outputResolution
+    let inputCount = inputVoxels * 8
+    try #require(fixture.count == inputCount + outputVoxels)
+
+    var inputValues = Array(fixture[..<inputCount])
+    let expectedValues = Array(fixture[inputCount...])
+    var lifecycle: [StageLifecycleEvent] = []
+    let session = try StageSession(
+        checkpointURL: URL(fileURLWithPath: checkpointPath),
+        expectedCheckpointSHA256:
+            "1c76d4a40519aa2d711cc263a8404105231ac26db31d946bed48b84fee79009a",
+        arenaCapacity: arenaCapacity,
+        lifecycleObserver: { lifecycle.append($0) }
+    )
+    let input = try #require(session.device.makeBuffer(
+        bytes: &inputValues,
+        length: inputValues.count * MemoryLayout<Float>.stride,
+        options: .storageModeShared
+    ))
+    let result = try session.decodeSparseStructureF32(
+        latent: input, inputResolution: inputResolution
+    )
+    let standalone = result.logits
+    let expectedOccupancy = try SparseStructureOccupancy.threshold(
+        logits: expectedValues, resolution: outputResolution
+    )
+    #expect(result.occupancy == expectedOccupancy)
+    #expect(
+        result.pooledOccupancy ==
+            (try SparseStructureOccupancy.downsampleMax2(expectedOccupancy))
+    )
+    #expect(result.coordinates == result.pooledOccupancy.coordinates())
+    #expect(result.highResolutionCoordinates == result.occupancy.coordinates())
+    let memory = try session.close()
+    #expect(memory.usedBytes == 0)
+    #expect(lifecycle == [.queueDrained, .arenaReleased, .checkpointUnmapped])
+
+    let actual = standalone.contents().assumingMemoryBound(to: Float.self)
+    var maximumError: Float = 0
+    var maximumMixedToleranceRatio: Float = 0
+    var squaredError: Double = 0
+    var expectedSquaredMagnitude: Double = 0
+    for index in expectedValues.indices {
+        try #require(actual[index].isFinite)
+        let expected = expectedValues[index]
+        let error = abs(actual[index] - expected)
+        maximumError = max(maximumError, error)
+        maximumMixedToleranceRatio = max(
+            maximumMixedToleranceRatio,
+            error / (0.01 + 0.001 * abs(expected))
+        )
+        squaredError += Double(error * error)
+        expectedSquaredMagnitude += Double(expected * expected)
+    }
+    let rms = sqrt(squaredError / Double(outputVoxels))
+    let expectedRMS = sqrt(expectedSquaredMagnitude / Double(outputVoxels))
+    return SparseStructureDecoderMetrics(
+        maximumError: maximumError,
+        rms: rms,
+        normalizedRMS: rms / max(expectedRMS, 1e-12),
+        maximumMixedToleranceRatio: maximumMixedToleranceRatio,
+        arenaPeakBytes: memory.peakUsedBytes
+    )
 }
 
 private func bf16(_ value: Float) -> UInt16 {

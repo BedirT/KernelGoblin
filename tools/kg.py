@@ -322,6 +322,31 @@ def command_model_native_test(args: argparse.Namespace) -> None:
             "native TRELLIS.2 conformance requires the pinned texture-flow checkpoint; "
             "pass --texture-checkpoint FILE.safetensors"
         )
+    sparse_structure_checkpoint = (
+        Path(args.sparse_structure_checkpoint).expanduser().resolve()
+        if args.sparse_structure_checkpoint else (
+            checkpoint.parent / "ss_flow_img_dit_1_3B_64_bf16.safetensors"
+        )
+    )
+    if not sparse_structure_checkpoint.is_file():
+        raise SystemExit(
+            "native TRELLIS.2 conformance requires the pinned sparse-structure "
+            "checkpoint; pass --sparse-structure-checkpoint FILE.safetensors"
+        )
+    sparse_structure_decoder_checkpoint = (
+        Path(args.sparse_structure_decoder_checkpoint).expanduser().resolve()
+        if args.sparse_structure_decoder_checkpoint else (
+            Path.home() / ".cache" / "huggingface" / "hub"
+            / "models--microsoft--TRELLIS-image-large" / "snapshots"
+            / "25e0d31ffbebe4b5a97464dd851910efc3002d96" / "ckpts"
+            / "ss_dec_conv3d_16l8_fp16.safetensors"
+        )
+    )
+    if not sparse_structure_decoder_checkpoint.is_file():
+        raise SystemExit(
+            "native TRELLIS.2 conformance requires the pinned sparse-structure "
+            "decoder; pass --sparse-structure-decoder-checkpoint FILE.safetensors"
+        )
     dino_checkpoint = (
         Path(args.dino_checkpoint).expanduser().resolve() if args.dino_checkpoint else (
             Path.home() / ".cache" / "huggingface" / "hub"
@@ -337,6 +362,12 @@ def command_model_native_test(args: argparse.Namespace) -> None:
     environment = os.environ.copy()
     environment["KG_TRELLIS2_SHAPE_FLOW_CHECKPOINT"] = str(checkpoint)
     environment["KG_TRELLIS2_TEXTURE_FLOW_CHECKPOINT"] = str(texture_checkpoint)
+    environment["KG_TRELLIS2_SPARSE_STRUCTURE_FLOW_CHECKPOINT"] = str(
+        sparse_structure_checkpoint
+    )
+    environment["KG_TRELLIS2_SPARSE_STRUCTURE_DECODER_CHECKPOINT"] = str(
+        sparse_structure_decoder_checkpoint
+    )
     environment["KG_TRELLIS2_DINO_CHECKPOINT"] = str(dino_checkpoint)
     run(["swift", "test", "--parallel"], env=environment)
 
@@ -488,6 +519,8 @@ def parser() -> argparse.ArgumentParser:
         if name == "native-test":
             sub.add_argument("--checkpoint")
             sub.add_argument("--texture-checkpoint")
+            sub.add_argument("--sparse-structure-checkpoint")
+            sub.add_argument("--sparse-structure-decoder-checkpoint")
             sub.add_argument("--dino-checkpoint")
         sub.set_defaults(func=function)
     model_run = model_commands.add_parser("run", help="run real model inference")

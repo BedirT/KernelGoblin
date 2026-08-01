@@ -19,6 +19,42 @@ public final class SLatFlowPipeline: @unchecked Sendable {
         self.pipelineMath = SLatPipelineMath(context: context)
     }
 
+    public func sampleSparseStructureF32(
+        noise: MTLBuffer, coordinates: MTLBuffer,
+        positiveConditioning: MTLBuffer, negativeConditioning: MTLBuffer,
+        checkpoint: MappedCheckpoint, conditioningTokens: Int,
+        parameters: FlowEulerParameters,
+        modelTrace: ((_ call: Int, _ pass: FlowConditioningPass, _ output: MTLBuffer) -> Void)? = nil,
+        samplerTrace: ((_ step: Int, _ state: MTLBuffer) -> Void)? = nil
+    ) throws -> SLatFlowSampleResult {
+        let tokens = 16 * 16 * 16
+        let flow = try SLatFlow(context: context, configuration: .sparseStructure)
+        let layout = try AttentionSegments(offsets: [0, tokens])
+        var call = 0
+        let result = try FlowEulerSampler(
+            context: context, parameters: parameters
+        ).sampleF32(
+            noise: noise, layout: layout, channels: 8,
+            trace: { step, state, _ in samplerTrace?(step, state) },
+            predictor: { state, modelTimestep, pass in
+                let conditioning = pass == .positive
+                    ? positiveConditioning : negativeConditioning
+                let output = try flow.forwardF32(
+                    input: state, timestep: try self.scalarBuffer(modelTimestep),
+                    conditioning: conditioning, coordinates: coordinates,
+                    checkpoint: checkpoint, tokens: tokens,
+                    conditioningTokens: conditioningTokens
+                )
+                modelTrace?(call, pass, output)
+                call += 1
+                return output
+            }
+        )
+        return SLatFlowSampleResult(
+            latent: result.samples, modelCallCount: result.modelCallCount
+        )
+    }
+
     public func sampleShapeF32(
         noise: MTLBuffer, coordinates: MTLBuffer,
         positiveConditioning: MTLBuffer, negativeConditioning: MTLBuffer,

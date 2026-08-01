@@ -1,0 +1,54 @@
+{
+  "format": "KernelGoblin TRELLIS.2 production sparse sampler F32 oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "source_path": "trellis2/models/sparse_structure_flow.py",
+  "source_sha256": "52182c80687e6544d97fc0fcbede738503623376ba29349004d7cc796c6b8efa",
+  "weight_revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+  "weight_sha256": "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6",
+  "device": "mps",
+  "torch_version": "2.13.0",
+  "cpu_fallback_enabled": false,
+  "resolution": 16,
+  "tokens": 4096,
+  "context_tokens": 1029,
+  "input_channels": 8,
+  "model_channels": 1536,
+  "output_channels": 8,
+  "blocks": 30,
+  "steps": 1,
+  "model_calls": 2,
+  "model_timesteps": [
+    1000.0,
+    1000.0
+  ],
+  "rescale_t": 5.0,
+  "guidance_strength": 7.5,
+  "guidance_rescale": 0.7,
+  "guidance_interval": [
+    0.6,
+    1.0
+  ],
+  "coordinate_order": "(x * 16 + y) * 16 + z; z-fast",
+  "input_formula": "f32(sin(i * 0.021) * 0.30)",
+  "context_formula": "f32(sin(i * 0.015) * 0.25)",
+  "input_range": [
+    0,
+    131072
+  ],
+  "context_range": [
+    131072,
+    4345856
+  ],
+  "trace_range": [
+    4345856,
+    4608000
+  ],
+  "trace_layout": "positive then negative model output; each [4096,8] F32",
+  "output_range": [
+    4608000,
+    4739072
+  ],
+  "output_space": "one-step Flow Euler sparse latent",
+  "payload_sha256": "9c7cd37e4c3abe1575ba93b1afbb3bee12e8d5295d8905a113bd13a2f0b50936",
+  "oracle": "pinned Torch SparseStructureFlowModel plus FlowEulerGuidanceIntervalSampler"
+}

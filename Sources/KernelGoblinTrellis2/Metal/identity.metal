@@ -528,10 +528,12 @@ kernel void kg_simdgroup_attention_f32(
   float accumulators[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   float running_max = -INFINITY;
   float running_sum = 0.0f;
+  const uint dimensions_per_lane = params.dimensions / 32;
   for (uint key = 0; key < params.key_count; ++key) {
     const uint key_base = (key * params.heads + head) * params.dimensions;
     float partial_score = 0.0f;
-    for (uint dimension = lane; dimension < params.dimensions; dimension += 32) {
+    for (uint slot = 0; slot < dimensions_per_lane; ++slot) {
+      const uint dimension = lane * dimensions_per_lane + slot;
       partial_score = fma(
           queries[query_base + dimension], keys[key_base + dimension], partial_score);
     }
@@ -541,16 +543,16 @@ kernel void kg_simdgroup_attention_f32(
     const float current_scale = exp(score - next_max);
     running_sum = running_sum * previous_scale + current_scale;
     running_max = next_max;
-    for (uint slot = 0; slot < 4; ++slot) {
-      const uint dimension = lane + slot * 32;
+    for (uint slot = 0; slot < dimensions_per_lane; ++slot) {
+      const uint dimension = lane * dimensions_per_lane + slot;
       if (dimension < params.dimensions) {
         accumulators[slot] = accumulators[slot] * previous_scale
             + current_scale * values[key_base + dimension];
       }
     }
   }
-  for (uint slot = 0; slot < 4; ++slot) {
-    const uint dimension = lane + slot * 32;
+  for (uint slot = 0; slot < dimensions_per_lane; ++slot) {
+    const uint dimension = lane * dimensions_per_lane + slot;
     if (dimension < params.dimensions) {
       output[query_base + dimension] = accumulators[slot] / running_sum;
     }

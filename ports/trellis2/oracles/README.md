@@ -62,8 +62,8 @@ small token count makes it a conformance test, not a representative memory or
 performance workload.
 
 The sampler fixture isolates the pinned sparse Flow-Euler schedule, guidance
-interval, sequential positive/negative CFG calls, population-standard-deviation
-rescale, and Euler update without loading model weights:
+interval, sequential positive/negative CFG calls, Torch-default unbiased
+standard-deviation rescale, and Euler update without loading model weights:
 
 ```sh
 build/trellis2/.venv/bin/python \
@@ -108,3 +108,52 @@ Both integration traces store every model prediction and Euler state. The
 first model call is the strict graph-parity check. Later values also expose the
 deterministic trajectory drift caused when backend-specific floating-point
 reduction differences are fed into the next denoising step.
+
+The dense sparse-structure flow uses the same transformer block semantics as
+the sparse SLat graph, but its checkpoint and coordinate domain are distinct.
+The authenticated block fixture proves that the shared Swift/Metal block can
+consume the real sparse-structure weights and `[batch,x,y,z]` RoPE coordinates:
+
+```sh
+build/trellis2/.venv/bin/python \
+  ports/trellis2/oracles/export_sparse_structure_block_fixture.py \
+  --checkpoint /path/to/ss_flow_img_dit_1_3B_64_bf16.safetensors \
+  --output build/trellis2/ss-block0-tiny.bf16
+```
+
+The production sampler fixture uses all 4,096 voxels, the full 1,029-token
+DINO-shaped conditioning layout, and one complete sparse Euler step, including
+positive and negative CFG calls through all 30 blocks. It records both model
+outputs and the final latent so model parity and sampler orchestration remain
+separate acceptance gates:
+
+```sh
+build/trellis2/.venv/bin/python \
+  ports/trellis2/oracles/export_sparse_structure_flow_fixture.py \
+  --checkpoint /path/to/ss_flow_img_dit_1_3B_64_bf16.safetensors \
+  --device mps \
+  --output build/trellis2/ss-sampler-r16-1step-mps.f32
+```
+
+The decoder fixture executes every tensor in the pinned 74-tensor occupancy
+decoder. Its default `2 -> 8` spatial shape is a fast full-weight graph check:
+
+```sh
+build/trellis2/.venv/bin/python \
+  ports/trellis2/oracles/export_sparse_structure_decoder_fixture.py \
+  --checkpoint /path/to/ss_dec_conv3d_16l8_fp16.safetensors \
+  --output build/trellis2/ss-decoder-r2.f32
+```
+
+The committed production acceptance fixture expands a 16-cubed latent to the
+real 64-cubed occupancy grid. Regenerate it only from the pinned checkpoint and
+source revision; MPS avoids the prohibitively slow reference CPU Conv3D path:
+
+```sh
+build/trellis2/.venv/bin/python \
+  ports/trellis2/oracles/export_sparse_structure_decoder_fixture.py \
+  --checkpoint /path/to/ss_dec_conv3d_16l8_fp16.safetensors \
+  --input-resolution 16 \
+  --device mps \
+  --output build/trellis2/ss-decoder-r16-mps.f32
+```

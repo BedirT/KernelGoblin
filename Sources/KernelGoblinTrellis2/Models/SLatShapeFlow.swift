@@ -1,20 +1,28 @@
 import Metal
 
 public enum SLatFlowConfiguration: Sendable {
+    case sparseStructure
     case shape
     case texture
 
     public var inputChannels: Int {
         switch self {
+        case .sparseStructure: 8
         case .shape: 32
         case .texture: 64
+        }
+    }
+
+    public var outputChannels: Int {
+        switch self {
+        case .sparseStructure: 8
+        case .shape, .texture: 32
         }
     }
 }
 
 public final class SLatFlow: @unchecked Sendable {
     public static let modelChannels = 1536
-    public static let outputChannels = 32
     public static let blockCount = 30
 
     public let configuration: SLatFlowConfiguration
@@ -101,16 +109,20 @@ public final class SLatFlow: @unchecked Sendable {
             channels: Self.modelChannels, epsilon: 1e-5, output: normalized
         )
         let outputWeight = try requireTensor(
-            checkpoint, "out_layer.weight", .bf16, [32, 1536]
+            checkpoint, "out_layer.weight", .bf16,
+            [UInt64(configuration.outputChannels), 1536]
         )
-        let outputBias = try requireTensor(checkpoint, "out_layer.bias", .bf16, [32])
-        let outputBytes = try shapeFlowBytes(tokens, Self.outputChannels)
+        let outputBias = try requireTensor(
+            checkpoint, "out_layer.bias", .bf16,
+            [UInt64(configuration.outputChannels)]
+        )
+        let outputBytes = try shapeFlowBytes(tokens, configuration.outputChannels)
         let output = try makeBuffer(length: outputBytes, label: "shape-flow output")
         try dense.linearBF16WeightsF32Output(
             input: normalized, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(outputWeight.fileOffset), biasOffset: Int(outputBias.fileOffset),
             rows: tokens, inputChannels: Self.modelChannels,
-            outputChannels: Self.outputChannels, output: output
+            outputChannels: configuration.outputChannels, output: output
         )
         return output
     }

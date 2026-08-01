@@ -47,6 +47,15 @@ public struct FlowEulerParameters: Sendable {
         )
     }
 
+    public static func sparseStructure512(
+        steps: Int = 12, guidanceStrength: Float = 7.5
+    ) throws -> FlowEulerParameters {
+        try FlowEulerParameters(
+            steps: steps, timeRescale: 5, guidanceStrength: guidanceStrength,
+            guidanceRescale: 0.7, guidanceInterval: 0.6...1.0
+        )
+    }
+
     public static func texture512(steps: Int = 12) throws -> FlowEulerParameters {
         try FlowEulerParameters(
             steps: steps, timeRescale: 3, guidanceStrength: 1,
@@ -198,6 +207,9 @@ public final class FlowEulerSampler: @unchecked Sendable {
             let count = Float(end - start)
             let positiveMean = positiveSum / count
             let guidedMean = guidedSum / count
+            // Torch applies the same Bessel correction to both standard
+            // deviations. It cancels from their ratio, so population moments
+            // preserve the exact CFG rescale while avoiding another rounding.
             let positiveStandardDeviation = sqrt(
                 positiveSquareSum / count - positiveMean * positiveMean
             )

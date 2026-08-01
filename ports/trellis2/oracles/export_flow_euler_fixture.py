@@ -100,9 +100,9 @@ def main() -> None:
         cond="positive",
         neg_cond="negative",
         steps=12,
-        rescale_t=3,
+        rescale_t=5,
         guidance_strength=7.5,
-        guidance_rescale=0.5,
+        guidance_rescale=0.7,
         guidance_interval=(0.6, 1.0),
         verbose=False,
     )
@@ -116,16 +116,16 @@ def main() -> None:
     trace_path = args.output.with_suffix(args.output.suffix + ".trace")
     trace_path.write_bytes(trace_payload)
     unit = np.linspace(1, 0, 13)
-    times = (3 * unit / (1 + 2 * unit)).tolist()
+    times = (5 * unit / (1 + 4 * unit)).tolist()
     metadata = {
         "format": "KernelGoblin TRELLIS.2 sparse Flow Euler F32 oracle v1",
         "source_revision": SOURCE_REVISION,
         "sampler": {
             "sigma_minimum": 1e-5,
             "steps": 12,
-            "time_rescale": 3.0,
+            "time_rescale": 5.0,
             "guidance_strength": 7.5,
-            "guidance_rescale": 0.5,
+            "guidance_rescale": 0.7,
             "guidance_interval": [0.6, 1.0],
         },
         "schedule_f64": times,

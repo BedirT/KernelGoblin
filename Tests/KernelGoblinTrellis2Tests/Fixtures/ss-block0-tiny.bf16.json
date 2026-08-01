@@ -1,0 +1,90 @@
+{
+  "format": "KernelGoblin TRELLIS.2 sparse-structure block BF16 oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "weight_revision": "af44b45f2e35a493886929c6d786e563ec68364d",
+  "weight_sha256": "ca01377c485bec418076d38ee80166d32dc776d744f2553b835cba1e97a7abf6",
+  "source_model": "SparseStructureFlowModel",
+  "block": 0,
+  "batch_count": 1,
+  "tokens": 2,
+  "coordinates": [
+    [
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      1
+    ]
+  ],
+  "context_tokens": 2,
+  "channels": 1536,
+  "context_channels": 1024,
+  "use_rope": true,
+  "input_formula": "bf16(sin(i * 0.013) * 0.35)",
+  "modulation_formula": "bf16(sin(i * 0.007) * 0.2)",
+  "context_formula": "bf16(sin(i * 0.015) * 0.25)",
+  "output_bytes": 6144,
+  "output_sha256": "f1f436bdfd034e90cc968ae8bee17b96b35d9ad30d605ecf4eba2d7e209adf3e",
+  "trace_file": "ss-block0-tiny.bf16.trace",
+  "trace_sha256": "1df17f811f4b20e74b6c2e615c415ec8a63db112a7aa0365c0098af4797f3bac",
+  "trace_offsets": {
+    "norm1": [
+      0,
+      6144
+    ],
+    "self_input": [
+      6144,
+      12288
+    ],
+    "self_output": [
+      12288,
+      18432
+    ],
+    "after_self": [
+      18432,
+      24576
+    ],
+    "norm2": [
+      24576,
+      30720
+    ],
+    "cross_output": [
+      30720,
+      36864
+    ],
+    "after_cross": [
+      36864,
+      43008
+    ],
+    "norm3": [
+      43008,
+      49152
+    ],
+    "mlp_input": [
+      49152,
+      55296
+    ],
+    "mlp_hidden_linear": [
+      55296,
+      88064
+    ],
+    "mlp_hidden_gelu": [
+      88064,
+      120832
+    ],
+    "mlp_output": [
+      120832,
+      126976
+    ],
+    "output": [
+      126976,
+      133120
+    ]
+  },
+  "oracle": "pinned Torch CPU ModulatedTransformerCrossBlock"
+}

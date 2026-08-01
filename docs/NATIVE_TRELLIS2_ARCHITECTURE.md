@@ -193,6 +193,35 @@ resources remain alive until each command completes, while completed command
 objects cannot accidentally extend a multi-gigabyte checkpoint mapping past
 the explicit stage boundary.
 
+The next native stage now has its first complete graph pieces. Dense
+sparse-structure block 0 consumes the authenticated 2.58 GB checkpoint through
+the same 30-block transformer machinery, including a physically dispatched
+128-wide SIMD-group attention path. The occupancy decoder has native
+voxel-major Conv3D for F32 and F16 checkpoint weights, explicit F16 activation
+boundaries, channel-wise LayerNorm32, residuals, and exact PixelShuffle3D. All
+74 real decoder tensors pass both a reduced-spatial diagnostic fixture and the
+production 16-to-64 graph. The production run matches the authenticated MPS
+oracle's occupancy exactly, reaches `0.000181` normalized RMS for 262,144
+logits, and peaks at 224 MiB in the bounded arena before returning to zero live
+bytes. Strict occupancy thresholding, bit packing, z-fast coordinate
+extraction, and 2x max pooling are deterministic Swift. The remaining sparse
+stage gates are the complete 12-step trajectory and its combined handoff into
+this decoder.
+
+That production flow gate now has its first full-size acceptance result. An
+authenticated MPS fixture drives 4,096 voxels and all 1,029 DINO-shaped context
+tokens through one real `.sparseStructure512` Euler step, including positive
+and negative CFG calls and all 30 transformer blocks. The two native model
+calls stay within `0.00923` and `0.00767` normalized RMS of the pinned oracle.
+The full step takes 92.5 seconds on Apple M3 Pro and peaks at 550,400,008 arena
+bytes (525 MiB), then
+returns to zero live bytes and unmaps the 2.58 GB checkpoint. The test verifies
+CFG orchestration independently from model arithmetic because guidance scales
+small backend-specific model differences by `7.5` and `-6.5`. The remaining
+sparse-flow work is the complete 12-step trajectory, performance tiling, and
+the stage-to-decoder acceptance fixture. A 600 MiB test cap leaves alignment
+headroom while preventing a silent regression toward the 768 MiB arena limit.
+
 The attention primitive now carries explicit segment offsets and rejects
 cross-sample attention as well as unsafe output/key/value aliases. The complete
 block contract remains batch one until timestep modulation also carries a

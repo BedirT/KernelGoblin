@@ -1,0 +1,21 @@
+{
+  "format": "KernelGoblin TRELLIS.2 sparse-structure decoder F32 oracle v1",
+  "source_revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+  "weight_revision": "25e0d31ffbebe4b5a97464dd851910efc3002d96",
+  "weight_sha256": "1c76d4a40519aa2d711cc263a8404105231ac26db31d946bed48b84fee79009a",
+  "input_resolution": 2,
+  "output_resolution": 8,
+  "input_layout": "voxel-major [x,y,z,channel] F32",
+  "output_layout": "voxel-major [x,y,z,channel=1] F32",
+  "input_formula": "sin(i * 0.071) * 0.35 + cos(i * 0.019) * 0.1",
+  "input_range": [
+    0,
+    256
+  ],
+  "output_range": [
+    256,
+    2304
+  ],
+  "payload_sha256": "e5fb37ddf9086981afec269c55f53ca6dac76a182c0adcb1edd4fe2dd6b0f8b3",
+  "oracle": "pinned Torch CPU SparseStructureDecoder with FP16 torso"
+}

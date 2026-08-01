@@ -41,6 +41,20 @@ public struct StageConditioning: @unchecked Sendable {
     public let hiddenSize: Int
 }
 
+public struct SparseStructureStageResult: @unchecked Sendable {
+    public let logits: MTLBuffer
+    public let occupancy: SparseOccupancyGrid
+    public let pooledOccupancy: SparseOccupancyGrid
+
+    public var coordinates: [SparseStructureCoordinate] {
+        pooledOccupancy.coordinates()
+    }
+
+    public var highResolutionCoordinates: [SparseStructureCoordinate] {
+        occupancy.coordinates()
+    }
+}
+
 public typealias ShapeStageModelTrace = (
     _ call: Int, _ pass: FlowConditioningPass, _ values: [Float]
 ) -> Void
@@ -193,6 +207,62 @@ public final class StageSession {
         }
     }
 
+    public func sampleSparseStructureF32(
+        noise: MTLBuffer,
+        positiveConditioning: MTLBuffer,
+        negativeConditioning: MTLBuffer,
+        conditioningTokens: Int,
+        parameters: FlowEulerParameters,
+        modelTrace: ShapeStageModelTrace? = nil,
+        samplerTrace: StageSamplerTrace? = nil
+    ) throws -> StageSample {
+        try autoreleasepool {
+            let (context, checkpoint, pipeline) = try activeRuntime()
+            let resolution = 16
+            let tokens = resolution * resolution * resolution
+            var coordinates = [Int32]()
+            coordinates.reserveCapacity(tokens * 4)
+            for x in 0..<resolution {
+                for y in 0..<resolution {
+                    for z in 0..<resolution {
+                        coordinates.append(contentsOf: [0, Int32(x), Int32(y), Int32(z)])
+                    }
+                }
+            }
+            let coordinateBuffer = try context.makeBuffer(
+                length: coordinates.count * MemoryLayout<Int32>.stride,
+                label: "Sparse-structure 16-cubed coordinates"
+            )
+            coordinates.withUnsafeBytes { bytes in
+                coordinateBuffer.contents().copyMemory(
+                    from: bytes.baseAddress!, byteCount: bytes.count
+                )
+            }
+            let elementCount = try stageElementCount(tokens, 8)
+            let result = try pipeline.sampleSparseStructureF32(
+                noise: noise, coordinates: coordinateBuffer,
+                positiveConditioning: positiveConditioning,
+                negativeConditioning: negativeConditioning,
+                checkpoint: checkpoint, conditioningTokens: conditioningTokens,
+                parameters: parameters,
+                modelTrace: { call, pass, output in
+                    modelTrace?(call, pass, Self.values(output, count: elementCount))
+                },
+                samplerTrace: { step, state in
+                    samplerTrace?(step, Self.values(state, count: elementCount))
+                }
+            )
+            return StageSample(
+                latent: try standaloneCopy(
+                    result.latent,
+                    byteCount: try stageByteCount(tokens, 8),
+                    label: "Sparse-structure standalone latent"
+                ),
+                modelCallCount: result.modelCallCount
+            )
+        }
+    }
+
     public func sampleTextureF32(
         noise: MTLBuffer,
         shapeLatent: MTLBuffer,
@@ -230,6 +300,36 @@ public final class StageSession {
                     label: "Texture stage standalone latent"
                 ),
                 modelCallCount: result.modelCallCount
+            )
+        }
+    }
+
+    public func decodeSparseStructureF32(
+        latent: MTLBuffer, inputResolution: Int = 16
+    ) throws -> SparseStructureStageResult {
+        try autoreleasepool {
+            let (context, checkpoint, _) = try activeRuntime()
+            let outputResolution = try stageProduct(inputResolution, 4)
+            let outputCount = try stageElementCount(
+                try stageProduct(try stageProduct(outputResolution, outputResolution),
+                                 outputResolution),
+                1
+            )
+            let decoded = try SparseStructureDecoder(context: context).decodeF32(
+                latent: latent, inputResolution: inputResolution, checkpoint: checkpoint
+            )
+            let standalone = try standaloneCopy(
+                decoded, byteCount: try stageProduct(outputCount, 4),
+                label: "Sparse-structure standalone logits"
+            )
+            let values = Self.values(standalone, count: outputCount)
+            let occupancy = try SparseStructureOccupancy.threshold(
+                logits: values, resolution: outputResolution
+            )
+            return SparseStructureStageResult(
+                logits: standalone,
+                occupancy: occupancy,
+                pooledOccupancy: try SparseStructureOccupancy.downsampleMax2(occupancy)
             )
         }
     }
@@ -354,6 +454,14 @@ private func stageByteCount(_ rows: Int, _ channels: Int) throws -> Int {
     let result = elements.multipliedReportingOverflow(by: MemoryLayout<Float>.stride)
     guard !result.overflow else {
         throw NativeRuntimeError.invalidArgument("stage tensor byte count overflows Int")
+    }
+    return result.partialValue
+}
+
+private func stageProduct(_ lhs: Int, _ rhs: Int) throws -> Int {
+    let result = lhs.multipliedReportingOverflow(by: rhs)
+    guard lhs > 0, rhs > 0, !result.overflow else {
+        throw NativeRuntimeError.invalidArgument("stage size overflows Int")
     }
     return result.partialValue
 }
