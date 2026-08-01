@@ -227,7 +227,9 @@ A one-step Hisar control-path run under Metal API validation completed in
 the native GLB contract, reloaded through both the native validator and Assimp,
 and recorded zero swaps. This proves stage selection and artifact integrity; it
 is not a default-quality geometry claim. Default-quality inspection still uses
-12 steps.
+12 steps. The immutable command, stage ledger, process accounting, and artifact
+hash are in
+[`docs/evidence/trellis2-native-geometry-m3pro-2026-08-01.md`](evidence/trellis2-native-geometry-m3pro-2026-08-01.md).
 
 ## Numerical Drift And Semantic Differences
 

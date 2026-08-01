@@ -221,4 +221,5 @@ image_to_pbr_evidence = "docs/evidence/trellis2-native-generation-m3pro-2026-08-
 geometry_only_status = "verified-native-one-step-control-path"
 geometry_only_skipped_stages = ["texture-flow", "texture-decoder", "uv-preparation", "pbr-bake"]
 geometry_only_checkpoint_count = 5
+geometry_only_evidence = "docs/evidence/trellis2-native-geometry-m3pro-2026-08-01.md"
 full_model_status = "verified-native-512"
