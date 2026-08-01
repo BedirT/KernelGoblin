@@ -85,6 +85,39 @@ struct SparseDecoderKernelTests {
         }
     }
 
+    @Test("native shape mesh decoder wires the Metal head into mesh extraction")
+    func nativeShapeMeshDecoder() throws {
+        let context = try MetalContext()
+        let coordinates = [
+            SparseStructureCoordinate(x: 0, y: 0, z: 0),
+            SparseStructureCoordinate(x: 0, y: 0, z: 1),
+            SparseStructureCoordinate(x: 0, y: 1, z: 0),
+            SparseStructureCoordinate(x: 0, y: 1, z: 1),
+        ]
+        var raw = Array(repeating: Float(0), count: coordinates.count * 7)
+        for index in coordinates.indices {
+            raw[index * 7] = 0
+            raw[index * 7 + 1] = 0
+            raw[index * 7 + 2] = 0
+            raw[index * 7 + 3] = 1
+            raw[index * 7 + 4] = -1
+            raw[index * 7 + 5] = -1
+            raw[index * 7 + 6] = 0
+        }
+        let buffer = try #require(context.device.makeBuffer(
+            bytes: &raw, length: raw.count * MemoryLayout<Float>.stride,
+            options: .storageModeShared
+        ))
+        let result = try NativeShapeMeshDecoder(context: context).decode(
+            rawHead: buffer, coordinates: coordinates,
+            gridSize: SparseSpatialShape(width: 2, height: 2, depth: 2)
+        )
+        #expect(result.sourceCoordinateCount == 4)
+        #expect(result.mesh.vertices.count == 4)
+        #expect(result.mesh.faces.count == 2)
+        #expect(result.gridSize == (try SparseSpatialShape(cubic: 2)))
+    }
+
     @Test("channel-to-spatial subdivision preserves upstream child ordering and layout")
     func channelToSpatialSubdivision() throws {
         let context = try MetalContext(arenaCapacity: 16 * 1024)
@@ -765,18 +798,20 @@ struct SparseDecoderKernelTests {
         let expected = try Data(contentsOf: fixtureURL).withUnsafeBytes {
             Array($0.bindMemory(to: Float.self))
         }
-        let context = try MetalContext(arenaCapacity: 256 * 1024 * 1024)
-        let checkpoint = try MappedCheckpoint(
-            url: URL(fileURLWithPath: path), device: context.device
+        let session = try StageSession(
+            checkpointURL: URL(fileURLWithPath: path),
+            expectedCheckpointSHA256:
+                "e3b718d3e43e4f8780e9a24ac6fff231811a67e3b058e336e10fe654c911d581",
+            arenaCapacity: 256 * 1024 * 1024
         )
         var latentValues = Array(expected[0..<32])
-        let latent = try #require(context.device.makeBuffer(
+        let latent = try #require(session.device.makeBuffer(
             bytes: &latentValues, length: latentValues.count * 4, options: .storageModeShared
         ))
-        let result = try ShapeSparseDecoder(context: context)(
+        let result = try session.decodeShapeF32(
             latent: latent,
             coordinates: [SparseStructureCoordinate(x: 0, y: 0, z: 0)],
-            spatialShape: SparseSpatialShape(cubic: 1), checkpoint: checkpoint
+            spatialShape: SparseSpatialShape(cubic: 1)
         )
         let rawOutputCoordinates = try #require(metadata["output_coordinates"] as? [[Int]])
         let expectedCoordinates = rawOutputCoordinates.map {
@@ -786,22 +821,14 @@ struct SparseDecoderKernelTests {
         }
         #expect(result.coordinates == expectedCoordinates)
         #expect(result.spatialShape == (try SparseSpatialShape(cubic: 16)))
-        let subdivisionOffsets = [32, 40, 104, 200]
-        let subdivisionCounts = [8, 64, 96, 176]
-        #expect(result.subdivisionLogits.count == 4)
-        for stage in 0..<4 {
-            compareDecoderBuffer(
-                result.subdivisionLogits[stage], expected: expected,
-                expectedOffset: subdivisionOffsets[stage], count: subdivisionCounts[stage],
-                name: "full subdivision \(stage)", normalizedCap: 0.002, scaleCap: 0.004
-            )
-        }
+        #expect(result.subdivisionGuides.count == 4)
+        #expect(result.subdivisionGuides.map(\.coordinates.count) == [8, 12, 22, 59])
         compareDecoderBuffer(
             result.rawHead, expected: expected, expectedOffset: 376,
             count: result.coordinates.count * 7, name: "full raw head",
             normalizedCap: 0.003, scaleCap: 0.006
         )
-        let snapshot = try #require(context.arena).snapshot()
+        let snapshot = try session.close()
         print("shape decoder full: tokens=\(result.coordinates.count) peak=\(snapshot.peakUsedBytes)")
         #expect(snapshot.peakUsedBytes <= 256 * 1024 * 1024)
     }
@@ -844,12 +871,12 @@ struct SparseDecoderKernelTests {
         let shapeFixture = try Data(contentsOf: shapeFixtureURL).withUnsafeBytes {
             Array($0.bindMemory(to: Float.self))
         }
-        let context = try MetalContext(arenaCapacity: 256 * 1024 * 1024)
-        let checkpoint = try MappedCheckpoint(
-            url: URL(fileURLWithPath: path), device: context.device
+        let session = try StageSession(
+            checkpointURL: URL(fileURLWithPath: path),
+            expectedCheckpointSHA256:
+                "97ea69addea2ecd9312910f5f548234665eef51c088386180b7cd5b258645e3c",
+            arenaCapacity: 256 * 1024 * 1024
         )
-        try #require(checkpoint.sha256() ==
-            "97ea69addea2ecd9312910f5f548234665eef51c088386180b7cd5b258645e3c")
         var coordinates = [SparseStructureCoordinate(x: 0, y: 0, z: 0)]
         let subdivisionOffsets = [32, 40, 104, 200]
         let subdivisionParentCounts = [1, 8, 12, 22]
@@ -858,7 +885,7 @@ struct SparseDecoderKernelTests {
             var logits = Array(shapeFixture[
                 subdivisionOffsets[stage]..<(subdivisionOffsets[stage] + subdivisionParentCounts[stage] * 8)
             ])
-            let buffer = try #require(context.device.makeBuffer(
+            let buffer = try #require(session.device.makeBuffer(
                 bytes: &logits, length: logits.count * 4, options: .storageModeShared
             ))
             let guide = try SparseSubdivision2x(
@@ -868,15 +895,15 @@ struct SparseDecoderKernelTests {
             coordinates = guide.coordinates
         }
         var latentValues = Array(expected[0..<32])
-        let latent = try #require(context.device.makeBuffer(
+        let latent = try #require(session.device.makeBuffer(
             bytes: &latentValues, length: latentValues.count * 4,
             options: .storageModeShared
         ))
-        let result = try TextureSparseDecoder(context: context)(
+        let result = try session.decodeTextureF32(
             latent: latent,
             coordinates: [SparseStructureCoordinate(x: 0, y: 0, z: 0)],
             spatialShape: SparseSpatialShape(cubic: 1),
-            subdivisionGuides: guides, checkpoint: checkpoint
+            subdivisionGuides: guides
         )
         let rawOutputCoordinates = try #require(metadata["output_coordinates"] as? [[Int]])
         let expectedCoordinates = rawOutputCoordinates.map {
@@ -887,16 +914,11 @@ struct SparseDecoderKernelTests {
         #expect(result.coordinates == expectedCoordinates)
         #expect(result.spatialShape == (try SparseSpatialShape(cubic: 16)))
         compareDecoderBuffer(
-            result.rawHead, expected: expected, expectedOffset: 32,
-            count: result.coordinates.count * 6, name: "texture raw head",
-            normalizedCap: 0.002, scaleCap: 0.004
-        )
-        compareDecoderBuffer(
             result.pbrFields, expected: expected, expectedOffset: 386,
             count: result.coordinates.count * 6, name: "texture PBR transform",
             normalizedCap: 0.002, scaleCap: 0.004
         )
-        let snapshot = try #require(context.arena).snapshot()
+        let snapshot = try session.close()
         print("texture decoder full: tokens=\(result.coordinates.count) peak=\(snapshot.peakUsedBytes)")
         #expect(snapshot.peakUsedBytes <= 256 * 1024 * 1024)
     }

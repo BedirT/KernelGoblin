@@ -1,0 +1,117 @@
+{
+  "format": "KernelGoblin-trimesh-fill-holes-v1",
+  "quad_hole": {
+    "faces": [
+      [
+        0,
+        4,
+        1
+      ],
+      [
+        1,
+        4,
+        2
+      ],
+      [
+        2,
+        4,
+        3
+      ],
+      [
+        3,
+        4,
+        0
+      ],
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        2,
+        3,
+        0
+      ]
+    ],
+    "vertices": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        1.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.5,
+        0.5,
+        1.0
+      ]
+    ]
+  },
+  "source": {
+    "callsite": "trellis2/pipelines/trellis2_image_to_3d.py:470-475",
+    "operation": "trimesh.Trimesh.fill_holes",
+    "repository": "https://github.com/microsoft/TRELLIS.2",
+    "revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+    "trimesh_version": "4.11.2"
+  },
+  "triangle_hole": {
+    "faces": [
+      [
+        0,
+        3,
+        1
+      ],
+      [
+        1,
+        3,
+        2
+      ],
+      [
+        2,
+        3,
+        0
+      ],
+      [
+        0,
+        1,
+        2
+      ]
+    ],
+    "vertices": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  }
+}
