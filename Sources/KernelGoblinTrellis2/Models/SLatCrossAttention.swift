@@ -161,7 +161,8 @@ public final class SLatCrossAttention: @unchecked Sendable {
         try attention.fusedF32(
             queries: normalizedQuery, keys: cached.normalizedKey, values: cached.value,
             queryCount: tokens, keyCount: conditioningTokens, heads: Self.heads,
-            dimensions: Self.headDimensions, output: attended
+            dimensions: Self.headDimensions, output: attended,
+            implementation: .automaticFloat32
         )
         try primitives.roundBF16F32(input: attended, count: queryBytes / 4, output: attended)
         let output = try makeBuffer(length: queryBytes, label: "SLat cross-attention output")

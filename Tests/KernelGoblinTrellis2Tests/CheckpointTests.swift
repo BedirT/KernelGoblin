@@ -571,6 +571,12 @@ struct CheckpointTests {
             implementation: .automatic
         )
         #expect(abs(output.contents().assumingMemoryBound(to: Float.self)[0] - -1.5) < 1e-6)
+        try fallback.linearBF16WeightsF32Output(
+            input: input, checkpoint: checkpoint, weightOffset: 0,
+            rows: 1, inputChannels: 3, outputChannels: 1, output: output,
+            implementation: .automaticFloat32
+        )
+        #expect(abs(output.contents().assumingMemoryBound(to: Float.self)[0] - -1.5) < 1e-6)
         #expect(throws: NativeRuntimeError.self) {
             try fallback.linearBF16WeightsF32Output(
                 input: input, checkpoint: checkpoint, weightOffset: 0,
@@ -1002,6 +1008,16 @@ struct CheckpointTests {
                 }
             }
         }
+        let metalExpected = Array(UnsafeBufferPointer(start: actual, count: queries.count))
+        try kernel.fusedF32(
+            queries: queryBuffer, keys: keyBuffer, values: valueBuffer,
+            queryCount: queryCount, keyCount: keyCount, heads: heads,
+            dimensions: dimensions, output: output,
+            implementation: .automaticFloat32
+        )
+        for index in 0..<queries.count {
+            #expect(actual[index] == metalExpected[index])
+        }
     }
 
     @Test("production 4,096-token Metal attention matches sampled MPS SDPA")
@@ -1079,6 +1095,34 @@ struct CheckpointTests {
         )
         #expect(metrics.normalizedRMS <= 0.005)
         #expect(metrics.maximumScaleRatio <= 0.01)
+
+        let float32Output = try #require(context.device.makeBuffer(
+            length: count * 4, options: .storageModeShared
+        ))
+        try kernel.fusedF32(
+            queries: queryBuffer, keys: keyBuffer, values: valueBuffer,
+            queryCount: tokens, keyCount: tokens, heads: heads,
+            dimensions: dimensions, output: float32Output,
+            implementation: .mpsGraphFloat32
+        )
+        let float32Actual = float32Output.contents().assumingMemoryBound(to: Float.self)
+        var sampledFloat32: [Float] = []
+        sampledFloat32.reserveCapacity(expected.count)
+        for query in sampledQueries {
+            let start = query * heads * dimensions
+            sampledFloat32 += (0..<(heads * dimensions)).map { float32Actual[start + $0] }
+        }
+        let float32Metrics = try compareFixtureValues(
+            actual: sampledFloat32, expected: expected
+        )
+        print(
+            "production F32 attention: max=\(float32Metrics.maximumError) " +
+                "rms=\(float32Metrics.rms) " +
+                "normalized_rms=\(float32Metrics.normalizedRMS) " +
+                "max_scale_ratio=\(float32Metrics.maximumScaleRatio)"
+        )
+        #expect(float32Metrics.normalizedRMS <= 0.005)
+        #expect(float32Metrics.maximumScaleRatio <= 0.01)
     }
 
     @Test("Metal segmented attention isolates sparse samples")

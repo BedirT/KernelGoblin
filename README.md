@@ -101,12 +101,14 @@ full-model claim.
 
 Some useful numbers from the physical M3 Pro verification:
 
-- 99 tests in 15 suites passed under Metal API validation, including complete
-  real-checkpoint stages and the production sparse trajectory.
+- 102 tests in 15 suites passed on the physical Metal backend. Separately,
+  checkpoint-gated tests passed complete real-checkpoint stages and the
+  production sparse trajectory.
 - The full 12-step sparse-structure trajectory executed all 22 model calls;
   teacher-forced probes stayed below `0.01376` normalized RMS.
-- Free-running BF16 feedback reached `0.7208` occupancy IoU with the captured
-  oracle. We report that drift instead of calling it exact parity.
+- The selected mixed-precision trajectory reached `0.7189` occupancy IoU with
+  the captured oracle and passes the unchanged structural gates. Dense stays
+  BF16; SDPA and the final Euler velocity projection use F32 accumulation.
 - The full shape encoder reaches `0.000700` normalized RMS. The authenticated
   mesh-to-O-Voxel-to-encoder handoff reaches `0.000555`, with exact sparse
   coordinates and all four subdivision guides.
@@ -139,11 +141,13 @@ stage ledger, hashes, and independent reload are in
 You need an Apple Silicon Mac, Xcode with the Metal toolchain, Swift 6.2+,
 CMake 3.25+, and Ninja.
 
-The runtime supports macOS 14. On macOS 15+, large 128-wide attention uses
-Apple's GPU-backed MPSGraph SDPA with BF16 model inputs and outputs; on macOS
-15.2+, large dense projections preserve the BF16 model boundary in MPSGraph as
-well. Small, segmented, or unavailable cases stay on our custom Metal kernels,
-where graph dispatch overhead would cost more than it saves.
+The runtime supports macOS 14. On macOS 15+, production SLat attention uses
+Apple's GPU-backed MPSGraph SDPA with F32 accumulation because the faster BF16
+route fails the pinned 12-step geometry gates. On macOS 15.2+, large dense
+projections preserve the BF16 model boundary in MPSGraph, except for the final
+Euler velocity projection. Small, segmented, or unavailable cases stay on our
+custom Metal kernels, where graph dispatch overhead would cost more than it
+saves.
 
 ```sh
 ./kg doctor

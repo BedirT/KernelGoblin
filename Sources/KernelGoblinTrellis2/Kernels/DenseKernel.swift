@@ -2,6 +2,7 @@ import Metal
 
 public enum BF16LinearImplementation: Sendable {
     case automatic
+    case automaticFloat32
     case tiled
     case simdgroupMatrix
     case mpsGraph
@@ -130,7 +131,7 @@ public final class DenseKernel: @unchecked Sendable {
         )
         let useMPSGraph = supportsMPSGraph && ((implementation == .mpsGraph
             || implementation == .mpsGraphModelPrecision)
-            || (implementation == .automatic
+            || ((implementation == .automatic || implementation == .automaticFloat32)
                 && !operationCount.overflow
                 && !rowInputCount.overflow
                 && rows >= 8
@@ -147,6 +148,7 @@ public final class DenseKernel: @unchecked Sendable {
                     outputChannels: outputChannels,
                     output: output,
                     modelPrecision: implementation != .mpsGraph
+                        && implementation != .automaticFloat32
                 )
             }
             return
@@ -159,7 +161,7 @@ public final class DenseKernel: @unchecked Sendable {
         let selectedPipeline: MTLComputePipelineState
         let usesSIMDGroupMatrix: Bool
         switch implementation {
-        case .automatic:
+        case .automatic, .automaticFloat32:
             // A single row does not amortize the cooperative matrix setup on
             // Apple M3. Keep tiny conditioning projections on the tiled path.
             if rows >= 8, let linearBF16SIMDGroupPipeline {

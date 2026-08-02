@@ -3,8 +3,11 @@ import Metal
 
 public enum AttentionImplementation: Sendable {
     case automatic
+    case automaticFloat32
     case metal
     case mpsGraph
+    // Preserves the pinned Torch/MPS 12-step trajectory while still using SDPA.
+    case mpsGraphFloat32
 }
 
 public struct AttentionSegments: Equatable, Sendable {
@@ -127,12 +130,15 @@ public final class AttentionKernel: @unchecked Sendable {
             && dimensions == 128
             && !operationCount.overflow
             && operationCount.partialValue >= 1_000_000
-        if implementation == .mpsGraph && !canUseMPSGraph {
+        if (implementation == .mpsGraph || implementation == .mpsGraphFloat32)
+            && !canUseMPSGraph {
             throw NativeRuntimeError.invalidArgument(
                 "MPSGraph attention requires one large 128-wide segment on macOS 15 or newer"
             )
         }
-        if implementation == .mpsGraph || (implementation == .automatic && canUseMPSGraph) {
+        if implementation == .mpsGraph || implementation == .mpsGraphFloat32
+            || ((implementation == .automatic || implementation == .automaticFloat32)
+                && canUseMPSGraph) {
             if #available(macOS 15.0, *) {
                 context.mpsGraphAttention.run(
                     queries: queries,
@@ -142,7 +148,9 @@ public final class AttentionKernel: @unchecked Sendable {
                     keyCount: keySegments.totalCount,
                     heads: heads,
                     dimensions: dimensions,
-                    output: output
+                    output: output,
+                    modelPrecision: implementation != .mpsGraphFloat32
+                        && implementation != .automaticFloat32
                 )
             }
             return

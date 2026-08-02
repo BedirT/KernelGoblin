@@ -3,11 +3,17 @@ import Metal
 import MetalPerformanceShadersGraph
 
 final class MPSGraphAttentionKernel: @unchecked Sendable {
+    private enum Precision: Hashable {
+        case float32
+        case modelBF16
+    }
+
     private struct Key: Hashable {
         let queryCount: Int
         let keyCount: Int
         let heads: Int
         let dimensions: Int
+        let precision: Precision
     }
 
     @available(macOS 15.0, *)
@@ -31,17 +37,20 @@ final class MPSGraphAttentionKernel: @unchecked Sendable {
             let value = graph.placeholder(
                 shape: keyShape, dataType: .float32, name: "value_nhd"
             )
-            let queryBF16 = graph.cast(query, to: .bFloat16, name: "query_bf16")
-            let keyBF16 = graph.cast(key, to: .bFloat16, name: "key_bf16")
-            let valueBF16 = graph.cast(value, to: .bFloat16, name: "value_bf16")
+            let attentionQuery = shape.precision == .modelBF16
+                ? graph.cast(query, to: .bFloat16, name: "query_bf16") : query
+            let attentionKey = shape.precision == .modelBF16
+                ? graph.cast(key, to: .bFloat16, name: "key_bf16") : key
+            let attentionValue = shape.precision == .modelBF16
+                ? graph.cast(value, to: .bFloat16, name: "value_bf16") : value
             let queryBHQD = graph.transpose(
-                queryBF16, permutation: [0, 2, 1, 3], name: "query_bhqd"
+                attentionQuery, permutation: [0, 2, 1, 3], name: "query_bhqd"
             )
             let keyBHKD = graph.transpose(
-                keyBF16, permutation: [0, 2, 1, 3], name: "key_bhkd"
+                attentionKey, permutation: [0, 2, 1, 3], name: "key_bhkd"
             )
             let valueBHKD = graph.transpose(
-                valueBF16, permutation: [0, 2, 1, 3], name: "value_bhkd"
+                attentionValue, permutation: [0, 2, 1, 3], name: "value_bhkd"
             )
             let attended = graph.scaledDotProductAttention(
                 query: queryBHQD,
@@ -54,10 +63,11 @@ final class MPSGraphAttentionKernel: @unchecked Sendable {
             self.query = query
             self.key = key
             self.value = value
-            let outputBF16 = graph.transpose(
-                attended, permutation: [0, 2, 1, 3], name: "output_nhd_bf16"
+            let transposed = graph.transpose(
+                attended, permutation: [0, 2, 1, 3], name: "output_nhd"
             )
-            self.output = graph.cast(outputBF16, to: .float32, name: "output_nhd")
+            self.output = shape.precision == .modelBF16
+                ? graph.cast(transposed, to: .float32, name: "output_f32") : transposed
         }
     }
 
@@ -83,14 +93,16 @@ final class MPSGraphAttentionKernel: @unchecked Sendable {
         keyCount: Int,
         heads: Int,
         dimensions: Int,
-        output: MTLBuffer
+        output: MTLBuffer,
+        modelPrecision: Bool
     ) {
         autoreleasepool {
             let shape = Key(
                 queryCount: queryCount,
                 keyCount: keyCount,
                 heads: heads,
-                dimensions: dimensions
+                dimensions: dimensions,
+                precision: modelPrecision ? .modelBF16 : .float32
             )
             let plan = cachedPlan(for: shape)
             let queryShape = [1, queryCount, heads, dimensions] as [NSNumber]

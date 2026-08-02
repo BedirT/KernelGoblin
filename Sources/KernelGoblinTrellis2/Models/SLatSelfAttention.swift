@@ -106,7 +106,8 @@ public final class SLatSelfAttention: @unchecked Sendable {
         try attention.fusedF32(
             queries: attentionQuery, keys: attentionKey, values: value,
             queryCount: tokens, keyCount: tokens, heads: Self.heads,
-            dimensions: Self.headDimensions, output: attended
+            dimensions: Self.headDimensions, output: attended,
+            implementation: .automaticFloat32
         )
         try primitives.roundBF16F32(
             input: attended, count: tensorElements, output: attended

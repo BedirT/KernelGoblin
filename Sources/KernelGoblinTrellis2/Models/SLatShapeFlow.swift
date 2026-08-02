@@ -128,11 +128,14 @@ public final class SLatFlow: @unchecked Sendable {
         )
         let outputBytes = try shapeFlowBytes(tokens, configuration.outputChannels)
         let output = try makeBuffer(length: outputBytes, label: "shape-flow output")
+        // This value becomes the Euler velocity directly; BF16 matmul output
+        // drift compounds across the complete sampler trajectory.
         try dense.linearBF16WeightsF32Output(
             input: normalized, checkpoint: try checkpoint.acquireBuffer(),
             weightOffset: Int(outputWeight.fileOffset), biasOffset: Int(outputBias.fileOffset),
             rows: tokens, inputChannels: Self.modelChannels,
-            outputChannels: configuration.outputChannels, output: output
+            outputChannels: configuration.outputChannels, output: output,
+            implementation: .automaticFloat32
         )
         return output
     }

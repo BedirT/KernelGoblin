@@ -72,7 +72,7 @@ native GLB reload, stage teardown, and zero-swap process accounting:
 A one-step run has one positive and one negative call, so it initializes but
 does not hit either branch's cache.
 
-## Correctness Blocker Exposed By The Evaluation
+## Correctness Issue Exposed By The Evaluation
 
 Both cached and uncached 12-step runs fail three existing structural gates after
 the previously landed BF16 dense production change: step-four maximum scale
@@ -81,6 +81,10 @@ and occupancy count ratio is `0.694030` against `0.70`. Tolerances were not
 loosened. The cache is byte-identical in the focused hit test and behaviorally
 identical in the full diagnostic, so this is a BF16 trajectory issue rather than
 a K/V reuse issue.
+
+The follow-up precision matrix resolved this without changing the oracle: F32
+self/cross SDPA plus an F32 final velocity projection passes the complete
+12-step gate. See `trellis2-mixed-precision-trajectory-m3pro-2026-08-01.md`.
 
 Modern temporal feature caches can save much more only by approximating stale
 diffusion features. They must be offered as an explicitly approximate quality
