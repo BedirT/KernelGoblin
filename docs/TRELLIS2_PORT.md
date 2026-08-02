@@ -294,6 +294,11 @@ and correctness hash are disclosed.
 The direct release CLI also supports `install`, `generate`, `texture`,
 `verify-glb`, checkpoint inspection, and focused real-layer verification.
 
+The consolidated performance progression is recorded in
+[`evidence/trellis2-performance-progression-m3pro-2026-08-01.md`](evidence/trellis2-performance-progression-m3pro-2026-08-01.md).
+It separates the `840.812s -> 125.813s` sparse-flow comparison from one-step
+full-generation and trajectory-plus-decoder timing boundaries.
+
 ## Optional Oracle Ladder
 
 ```sh

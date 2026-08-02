@@ -120,6 +120,9 @@ Some useful numbers from the physical M3 Pro verification:
 The detailed ledger, exact hashes, timing boundaries, and semantic gaps live in
 [`docs/TRELLIS2_PORT.md`](docs/TRELLIS2_PORT.md). The machine-readable source of
 truth is [`ports/trellis2/model.toml`](ports/trellis2/model.toml).
+The performance story, including the original bottleneck and the honest
+`840.812s -> 125.813s` sparse-flow comparison, is documented separately in
+[`docs/evidence/trellis2-performance-progression-m3pro-2026-08-01.md`](docs/evidence/trellis2-performance-progression-m3pro-2026-08-01.md).
 
 ![Three deterministic views of the native existing-mesh PBR result](docs/assets/trellis2-native-texturing-preview.png)
 
