@@ -101,7 +101,7 @@ full-model claim.
 
 Some useful numbers from the physical M3 Pro verification:
 
-- 102 tests in 15 suites passed on the physical Metal backend. Separately,
+- 103 tests in 15 suites passed on the physical Metal backend. Separately,
   checkpoint-gated tests passed complete real-checkpoint stages and the
   production sparse trajectory.
 - The full 12-step sparse-structure trajectory executed all 22 model calls;
@@ -172,6 +172,13 @@ GLB. The result is written to `build/trellis2/outputs/image.glb`, with its
 evidence next to it. Repeated `generate` calls reuse the release binary instead
 of asking SwiftPM to rebuild it. The longer `./kg model run trellis2 ...` form
 remains the reproducibility and experiment interface.
+
+Generation output is meant to be read, not decoded. It announces the resolved
+input, output, foreground policy, and quality settings; numbers every stage in
+plain language; reports each completed stage's wall time; and finishes with the
+total duration, model path, file size, mesh size, PBR coverage, GLB validation,
+device, and evidence path. Exact hashes and detailed allocation accounting stay
+in the neighboring JSON record.
 
 TRELLIS.2's own model weights are open under MIT. Its image pipelines also use
 Meta's separately gated DINOv3 encoder. Accept the DINOv3 terms on Hugging Face

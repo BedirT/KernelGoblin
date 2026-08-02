@@ -7,6 +7,15 @@ import UniformTypeIdentifiers
 
 @Suite("Native TRELLIS.2 image preprocessing")
 struct ImagePreprocessorTests {
+    @Test("image preprocessing errors explain the recovery action")
+    func readableErrors() {
+        #expect(TrellisImagePreprocessorError.unreadableImage.description.contains("PNG or JPEG"))
+        #expect(TrellisImagePreprocessorError.decodeFailed.description.contains("could not decode"))
+        #expect(TrellisImagePreprocessorError.backgroundRemovalFailed.description.contains("Apple Vision"))
+        #expect(TrellisImagePreprocessorError.opaqueImageRequiresBackgroundRemoval
+            .description.contains("transparent PNG"))
+    }
+
     @Test("real PNG decode follows alpha crop, premultiplication, CHW, and normalization")
     func alphaPNGContract() throws {
         let url = temporaryURL(extension: "png")

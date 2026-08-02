@@ -151,8 +151,12 @@ def kernel(value: str) -> dict:
         raise SystemExit(f"unknown kernel {value!r}; available: {choices}")
 
 
-def run(command: list[str], *, env: dict[str, str] | None = None) -> None:
-    print("+", " ".join(command), flush=True)
+def run(
+    command: list[str], *, env: dict[str, str] | None = None,
+    announce: bool = True,
+) -> None:
+    if announce:
+        print("+", " ".join(command), flush=True)
     subprocess.run(command, cwd=ROOT, check=True, env=env)
 
 
@@ -857,8 +861,6 @@ def command_generate(args: argparse.Namespace) -> None:
         suffix = "-mesh.glb" if args.geometry_only else ".glb"
         output_path = ROOT / "build" / args.model / "outputs" / f"{safe_stem}{suffix}"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[generate] input={input_path}", flush=True)
-    print(f"[generate] output={output_path}", flush=True)
     command = [
         str(ready_native_trellis_executable(manifest)), "generate",
         "--input", str(input_path), "--output", str(output_path),
@@ -867,7 +869,7 @@ def command_generate(args: argparse.Namespace) -> None:
     ]
     if args.geometry_only:
         command.append("--geometry-only")
-    run(command)
+    run(command, announce=False)
 
 
 def command_model_oracle_texture(args: argparse.Namespace) -> None:

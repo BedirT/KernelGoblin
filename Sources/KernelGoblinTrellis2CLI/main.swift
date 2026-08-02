@@ -167,19 +167,33 @@ enum KernelGoblinTrellis2Command {
             ? .acceptWithoutBackgroundRemoval
             : (options.flag("require-alpha")
                 ? .requireMeaningfulAlpha : .appleVisionForegroundMask)
-        let evidence = try NativeTrellis2Pipeline().generate512(
-            imageURL: input,
-            opaquePolicy: opaquePolicy,
-            checkpoints: checkpoints,
-            options: Trellis2GenerationOptions(
-                seed: seed, steps: steps, textureSize: textureSize,
-                alphaMode: alphaMode,
-                geometryOnly: geometryOnly,
-                memory: memory
-            ),
-            outputURL: output,
-            progress: reportProgress
+        let progress = PipelineConsoleProgress(totalStages: geometryOnly ? 8 : 10)
+        let generationStarted = Date()
+        printGenerationHeader(
+            input: input, output: output, geometryOnly: geometryOnly,
+            steps: steps, seed: seed, textureSize: textureSize,
+            foreground: foregroundDescription(for: opaquePolicy)
         )
+        let evidence: Trellis2GenerationEvidence
+        do {
+            evidence = try NativeTrellis2Pipeline().generate512(
+                imageURL: input,
+                opaquePolicy: opaquePolicy,
+                checkpoints: checkpoints,
+                options: Trellis2GenerationOptions(
+                    seed: seed, steps: steps, textureSize: textureSize,
+                    alphaMode: alphaMode,
+                    geometryOnly: geometryOnly,
+                    memory: memory
+                ),
+                outputURL: output,
+                progress: { progress.start($0) }
+            )
+        } catch {
+            progress.fail()
+            throw error
+        }
+        progress.finish()
         let evidenceURL = options.value("evidence").map(URL.init(fileURLWithPath:))
             ?? output.appendingPathExtension("evidence.json")
         try FileManager.default.createDirectory(
@@ -188,19 +202,11 @@ enum KernelGoblinTrellis2Command {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try encoder.encode(evidence).write(to: evidenceURL, options: .atomic)
-        print(options.flag("geometry-only")
-            ? "PASS: native Swift + Metal TRELLIS.2 geometry generation"
-            : "PASS: native Swift + Metal TRELLIS.2 generation")
-        print("output=\(output.path)")
-        print("evidence=\(evidenceURL.path)")
-        print("sha256=\(evidence.outputSHA256)")
-        print("mesh_vertices=\(evidence.meshVertexCount) mesh_faces=\(evidence.meshFaceCount)")
-        print("output_vertices=\(evidence.outputVertexCount) output_faces=\(evidence.outputFaceCount)")
-        if options.flag("geometry-only") {
-            print("mode=geometry-only texture_flow=false texture_decoder=false pbr_bake=false")
-        } else {
-            print("texture=\(evidence.textureSize)x\(evidence.textureSize) covered=\(evidence.coveredTexels)")
-        }
+        printGenerationResult(
+            evidence: evidence, output: output, evidenceURL: evidenceURL,
+            elapsed: Date().timeIntervalSince(generationStarted),
+            geometryOnly: geometryOnly
+        )
     }
 
     private static func texture(arguments: [String]) throws {
@@ -257,16 +263,30 @@ enum KernelGoblinTrellis2Command {
             memory.textureFlowBytes = bytes
             memory.textureDecoderBytes = bytes
         }
-        let evidence = try NativeTrellis2Pipeline().texture512(
-            meshURL: mesh, imageURL: input, opaquePolicy: opaquePolicy,
-            checkpoints: checkpoints,
-            options: Trellis2TexturingOptions(
-                seed: seed, steps: steps, textureSize: textureSize,
-                uvPolicy: uvPolicy, alphaMode: alphaMode, memory: memory
-            ),
-            outputURL: output,
-            progress: reportProgress
+        let progress = PipelineConsoleProgress(totalStages: 8)
+        let texturingStarted = Date()
+        printTexturingHeader(
+            mesh: mesh, input: input, output: output,
+            steps: steps, seed: seed, textureSize: textureSize,
+            foreground: foregroundDescription(for: opaquePolicy)
         )
+        let evidence: Trellis2TexturingEvidence
+        do {
+            evidence = try NativeTrellis2Pipeline().texture512(
+                meshURL: mesh, imageURL: input, opaquePolicy: opaquePolicy,
+                checkpoints: checkpoints,
+                options: Trellis2TexturingOptions(
+                    seed: seed, steps: steps, textureSize: textureSize,
+                    uvPolicy: uvPolicy, alphaMode: alphaMode, memory: memory
+                ),
+                outputURL: output,
+                progress: { progress.start($0) }
+            )
+        } catch {
+            progress.fail()
+            throw error
+        }
+        progress.finish()
         let evidenceURL = options.value("evidence").map(URL.init(fileURLWithPath:))
             ?? output.appendingPathExtension("evidence.json")
         try FileManager.default.createDirectory(
@@ -275,13 +295,10 @@ enum KernelGoblinTrellis2Command {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try encoder.encode(evidence).write(to: evidenceURL, options: .atomic)
-        print("PASS: native Swift + Metal TRELLIS.2 existing-mesh texturing")
-        print("output=\(output.path)")
-        print("evidence=\(evidenceURL.path)")
-        print("sha256=\(evidence.outputSHA256)")
-        print("source_vertices=\(evidence.sourceVertexCount) source_faces=\(evidence.sourceFaceCount)")
-        print("output_vertices=\(evidence.outputVertexCount) output_faces=\(evidence.outputFaceCount)")
-        print("texture=\(evidence.textureSize)x\(evidence.textureSize) covered=\(evidence.coveredTexels)")
+        printTexturingResult(
+            evidence: evidence, output: output, evidenceURL: evidenceURL,
+            elapsed: Date().timeIntervalSince(texturingStarted)
+        )
     }
 
     private static func printUsage() {
@@ -317,8 +334,118 @@ enum KernelGoblinTrellis2Command {
         """)
     }
 
-    private static func reportProgress(_ stage: String) {
-        FileHandle.standardOutput.write(Data("[native] \(stage)\n".utf8))
+    private static func printGenerationHeader(
+        input: URL, output: URL, geometryOnly: Bool,
+        steps: Int, seed: UInt64, textureSize: Int, foreground: String
+    ) {
+        writeLine("")
+        writeLine("KernelGoblin TRELLIS.2")
+        writeLine(geometryOnly
+            ? "Creating a 3D mesh from one image"
+            : "Creating a textured 3D model from one image")
+        writeLine("")
+        writeLine("Input:      \(input.path)")
+        writeLine("Output:     \(output.path)")
+        writeLine("Foreground: \(foreground)")
+        writeLine(geometryOnly
+            ? "Settings:   \(steps) steps, seed \(seed), geometry only"
+            : "Settings:   \(steps) steps, seed \(seed), \(textureSize)x\(textureSize) PBR textures")
+        writeLine("Runtime:    native Swift + Metal")
+        writeLine("")
+        writeLine("Progress")
+    }
+
+    private static func printGenerationResult(
+        evidence: Trellis2GenerationEvidence, output: URL, evidenceURL: URL,
+        elapsed: TimeInterval, geometryOnly: Bool
+    ) {
+        writeLine("")
+        writeLine("Model ready")
+        writeLine("")
+        writeLine("Time:       \(formattedDuration(elapsed))")
+        writeLine("Model:      \(output.path)")
+        writeLine("File size:  \(formattedBytes(evidence.glbBytes))")
+        writeLine("Mesh:       \(formattedCount(evidence.outputVertexCount)) vertices, "
+            + "\(formattedCount(evidence.outputFaceCount)) faces")
+        if geometryOnly {
+            writeLine("Material:   neutral material; no UVs or generated textures")
+        } else {
+            let texels = max(1, evidence.textureSize * evidence.textureSize)
+            let coverage = 100 * Double(evidence.coveredTexels) / Double(texels)
+            writeLine("Textures:   \(evidence.textureSize)x\(evidence.textureSize) PBR, "
+                + String(format: "%.1f%% surface coverage", coverage))
+        }
+        writeLine("Validation: GLB reloaded successfully")
+        writeLine("Device:     \(evidence.device)")
+        writeLine("Evidence:   \(evidenceURL.path)")
+        writeLine("")
+        writeLine("Stage timings")
+        for stage in evidence.stages {
+            let name = PipelineConsoleProgress.title(for: stage.name)
+            let padding = String(repeating: " ", count: max(1, 28 - name.count))
+            writeLine("  \(name)\(padding)\(formattedDuration(stage.elapsedSeconds)), "
+                + "peak \(formattedBytes(stage.arenaPeakBytes))")
+        }
+        writeLine("")
+        writeLine("Full hashes, memory accounting, and checkpoint provenance are in the evidence file.")
+    }
+
+    private static func printTexturingHeader(
+        mesh: URL, input: URL, output: URL,
+        steps: Int, seed: UInt64, textureSize: Int, foreground: String
+    ) {
+        writeLine("")
+        writeLine("KernelGoblin TRELLIS.2")
+        writeLine("Texturing an existing 3D model from one reference image")
+        writeLine("")
+        writeLine("Mesh:       \(mesh.path)")
+        writeLine("Reference:  \(input.path)")
+        writeLine("Output:     \(output.path)")
+        writeLine("Foreground: \(foreground)")
+        writeLine("Settings:   \(steps) steps, seed \(seed), "
+            + "\(textureSize)x\(textureSize) PBR textures")
+        writeLine("Runtime:    native Swift + Metal")
+        writeLine("")
+        writeLine("Progress")
+    }
+
+    private static func printTexturingResult(
+        evidence: Trellis2TexturingEvidence, output: URL, evidenceURL: URL,
+        elapsed: TimeInterval
+    ) {
+        let texels = max(1, evidence.textureSize * evidence.textureSize)
+        let coverage = 100 * Double(evidence.coveredTexels) / Double(texels)
+        writeLine("")
+        writeLine("Textured model ready")
+        writeLine("")
+        writeLine("Time:       \(formattedDuration(elapsed))")
+        writeLine("Model:      \(output.path)")
+        writeLine("File size:  \(formattedBytes(evidence.glbBytes))")
+        writeLine("Mesh:       \(formattedCount(evidence.outputVertexCount)) vertices, "
+            + "\(formattedCount(evidence.outputFaceCount)) faces")
+        writeLine("Textures:   \(evidence.textureSize)x\(evidence.textureSize) PBR, "
+            + String(format: "%.1f%% surface coverage", coverage))
+        writeLine("Validation: GLB reloaded successfully")
+        writeLine("Device:     \(evidence.device)")
+        writeLine("Evidence:   \(evidenceURL.path)")
+        writeLine("")
+        writeLine("Stage timings")
+        for stage in evidence.stages {
+            let name = PipelineConsoleProgress.title(for: stage.name)
+            let padding = String(repeating: " ", count: max(1, 28 - name.count))
+            writeLine("  \(name)\(padding)\(formattedDuration(stage.elapsedSeconds)), "
+                + "peak \(formattedBytes(stage.arenaPeakBytes))")
+        }
+        writeLine("")
+        writeLine("Full hashes, memory accounting, and checkpoint provenance are in the evidence file.")
+    }
+
+    private static func foregroundDescription(for policy: TrellisOpaqueImagePolicy) -> String {
+        switch policy {
+        case .appleVisionForegroundMask: "automatic Apple Vision background removal"
+        case .requireMeaningfulAlpha: "use the image's alpha mask"
+        case .acceptWithoutBackgroundRemoval: "keep the input background"
+        }
     }
 
     private static func verifyDinoLinear(url: URL) throws {
@@ -754,6 +881,95 @@ enum KernelGoblinTrellis2Command {
         print("heads=12 head_dimensions=128 max_abs_error=\(maximumAbsoluteError)")
         print("bf16_bit_mismatches=\(mismatchedBF16) attention_score_matrix_bytes=0")
     }
+}
+
+private final class PipelineConsoleProgress {
+    private let totalStages: Int
+    private var completedStages = 0
+    private var currentTitle: String?
+    private var currentStarted: Date?
+
+    init(totalStages: Int) {
+        self.totalStages = totalStages
+    }
+
+    func start(_ stage: String) {
+        completeCurrent(at: Date())
+        completedStages += 1
+        let title = Self.title(for: stage)
+        currentTitle = title
+        currentStarted = Date()
+        writeLine("  [\(completedStages)/\(totalStages)] \(title)")
+    }
+
+    func finish() {
+        completeCurrent(at: Date())
+    }
+
+    func fail() {
+        guard let currentTitle, let currentStarted else { return }
+        writeLine("        Stopped during \(currentTitle.lowercased()) after "
+            + formattedDuration(Date().timeIntervalSince(currentStarted)))
+        self.currentTitle = nil
+        self.currentStarted = nil
+    }
+
+    private func completeCurrent(at date: Date) {
+        guard let currentTitle, let currentStarted else { return }
+        writeLine("        Finished \(currentTitle.lowercased()) in "
+            + formattedDuration(date.timeIntervalSince(currentStarted)))
+        self.currentTitle = nil
+        self.currentStarted = nil
+    }
+
+    static func title(for stage: String) -> String {
+        switch stage {
+        case "image-preprocessing": "Image preparation and foreground mask"
+        case "mesh-loading": "Mesh loading and UV preparation"
+        case "image-conditioning", "dino-v3": "Image conditioning"
+        case "sparse-structure-flow": "Coarse geometry generation"
+        case "sparse-structure-decoder": "Coarse geometry decoding"
+        case "shape-flow": "Detailed shape generation"
+        case "shape-decoder": "Detailed shape decoding"
+        case "mesh-extraction": "Mesh extraction and repair"
+        case "geometry-export": "GLB geometry export"
+        case "texture-flow": "Texture generation"
+        case "texture-decoder": "PBR field decoding"
+        case "uv-and-pbr-export", "pbr-export": "UV unwrap, PBR bake, and GLB export"
+        case "mesh-voxelization": "Mesh voxelization"
+        case "shape-encoder": "Shape encoding"
+        default: stage.replacingOccurrences(of: "-", with: " ").capitalized
+        }
+    }
+}
+
+private func writeLine(_ value: String) {
+    FileHandle.standardOutput.write(Data("\(value)\n".utf8))
+}
+
+private func formattedDuration(_ seconds: TimeInterval) -> String {
+    if seconds < 60 { return String(format: "%.1fs", seconds) }
+    let minutes = Int(seconds) / 60
+    let remainder = seconds - Double(minutes * 60)
+    if minutes < 60 { return String(format: "%dm %.1fs", minutes, remainder) }
+    let hours = minutes / 60
+    return String(format: "%dh %dm %.1fs", hours, minutes % 60, remainder)
+}
+
+private func formattedBytes(_ bytes: Int) -> String {
+    let value = Double(bytes)
+    if bytes >= 1024 * 1024 * 1024 {
+        return String(format: "%.2f GiB", value / Double(1024 * 1024 * 1024))
+    }
+    if bytes >= 1024 * 1024 {
+        return String(format: "%.1f MiB", value / Double(1024 * 1024))
+    }
+    if bytes >= 1024 { return String(format: "%.1f KiB", value / 1024) }
+    return "\(bytes) B"
+}
+
+private func formattedCount(_ value: Int) -> String {
+    value.formatted(.number.grouping(.automatic))
 }
 
 private struct CLIOptions {

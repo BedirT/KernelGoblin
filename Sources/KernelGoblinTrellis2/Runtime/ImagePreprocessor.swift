@@ -19,7 +19,7 @@ public enum TrellisOpaqueImagePolicy: Sendable {
     case acceptWithoutBackgroundRemoval
 }
 
-public enum TrellisImagePreprocessorError: Error, Equatable, Sendable {
+public enum TrellisImagePreprocessorError: Error, CustomStringConvertible, Equatable, Sendable {
     case invalidTargetSize(Int)
     case unreadableImage
     case decodeFailed
@@ -28,6 +28,27 @@ public enum TrellisImagePreprocessorError: Error, Equatable, Sendable {
     case foregroundCropIsEmpty
     case imageTooLarge
     case backgroundRemovalFailed
+
+    public var description: String {
+        switch self {
+        case .invalidTargetSize(let size):
+            "image target size must be positive; received \(size)"
+        case .unreadableImage:
+            "the input image could not be opened; check that the path exists and is a PNG or JPEG"
+        case .decodeFailed:
+            "the input image exists but ImageIO could not decode it"
+        case .opaqueImageRequiresBackgroundRemoval:
+            "the image has no usable alpha mask; allow Apple Vision background removal or provide a transparent PNG"
+        case .noForegroundAboveAlphaThreshold:
+            "the alpha mask contains no foreground above the required threshold"
+        case .foregroundCropIsEmpty:
+            "the detected foreground crop is empty"
+        case .imageTooLarge:
+            "the image preprocessing dimensions exceed the safe native limit"
+        case .backgroundRemovalFailed:
+            "Apple Vision could not isolate a foreground object in this image"
+        }
+    }
 }
 
 public struct TrellisConditioningImage: Sendable {
