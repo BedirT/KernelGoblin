@@ -270,6 +270,17 @@ and correctness hash are disclosed.
 
 ## Reproduce The Native Ladder
 
+For normal generation, install once and pass an image. Defaults produce a
+12-step 512 PBR GLB and its evidence record:
+
+```sh
+./kg model setup trellis2
+./kg generate trellis2 image.png
+```
+
+The output is `build/trellis2/outputs/image.glb`. The longer commands below are
+the verification and experiment interface rather than the everyday front door.
+
 ```sh
 ./kg doctor
 ./kg validate

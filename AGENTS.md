@@ -35,6 +35,7 @@ correct accelerator implementation is proven.
 ./kg benchmark trellis2/z_order
 ./kg model setup trellis2
 ./kg model test trellis2
+./kg generate trellis2 image.png
 ./kg model run trellis2 --input image.png --output build/trellis2/output
 ./kg model run trellis2 --input image.png --output build/trellis2/mesh.glb \
   --geometry-only

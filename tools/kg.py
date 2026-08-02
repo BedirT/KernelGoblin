@@ -477,11 +477,24 @@ def command_model_oracle_setup(args: argparse.Namespace) -> None:
 def native_trellis_executable(manifest: dict) -> Path:
     product = manifest["native"]["executable"]
     run(["swift", "build", "-c", "release", "--product", product])
+    return native_trellis_binary_path(manifest)
+
+
+def native_trellis_binary_path(manifest: dict) -> Path:
+    product = manifest["native"]["executable"]
     result = subprocess.run(
         ["swift", "build", "-c", "release", "--show-bin-path"],
         cwd=ROOT, check=True, capture_output=True, text=True,
     )
     return Path(result.stdout.strip()) / product
+
+
+def ready_native_trellis_executable(manifest: dict) -> Path:
+    executable = native_trellis_binary_path(manifest)
+    if executable.is_file():
+        return executable
+    print("[setup] building the native Swift + Metal runtime once", flush=True)
+    return native_trellis_executable(manifest)
 
 
 def native_trellis_install_root(value: str | None = None) -> Path:
@@ -829,6 +842,34 @@ def command_model_run(args: argparse.Namespace) -> None:
     run(command)
 
 
+def command_generate(args: argparse.Namespace) -> None:
+    manifest = require_model(args.model)
+    if not 1 <= args.steps <= 100:
+        raise SystemExit("--steps must be between 1 and 100")
+    input_path = Path(args.image).expanduser().resolve()
+    if not input_path.is_file():
+        raise SystemExit(f"input image does not exist: {input_path}")
+    if args.output:
+        output_path = Path(args.output).expanduser().resolve()
+    else:
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", input_path.stem).strip("-._")
+        safe_stem = safe_stem or "model"
+        suffix = "-mesh.glb" if args.geometry_only else ".glb"
+        output_path = ROOT / "build" / args.model / "outputs" / f"{safe_stem}{suffix}"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[generate] input={input_path}", flush=True)
+    print(f"[generate] output={output_path}", flush=True)
+    command = [
+        str(ready_native_trellis_executable(manifest)), "generate",
+        "--input", str(input_path), "--output", str(output_path),
+        "--seed", "42", "--steps", str(args.steps),
+        "--texture-size", "2048", "--alpha-mode", "OPAQUE",
+    ]
+    if args.geometry_only:
+        command.append("--geometry-only")
+    run(command)
+
+
 def command_model_oracle_texture(args: argparse.Namespace) -> None:
     manifest = require_model(args.model)
     if not trellis_python(manifest).is_file():
@@ -879,6 +920,18 @@ def parser() -> argparse.ArgumentParser:
     list_command.set_defaults(func=command_list)
     commands.add_parser("doctor", help="check native build tools").set_defaults(func=command_doctor)
     commands.add_parser("validate", help="validate manifests and agent harness").set_defaults(func=command_validate)
+    generate = commands.add_parser(
+        "generate", help="turn one image into a model with sensible defaults"
+    )
+    generate.add_argument("model", help="registered model runtime, such as trellis2")
+    generate.add_argument("image", help="input PNG or JPEG")
+    generate.add_argument("--output", help="output GLB path")
+    generate.add_argument("--steps", type=int, default=12)
+    generate.add_argument(
+        "--geometry-only", action="store_true",
+        help="skip texture generation and write a neutral mesh",
+    )
+    generate.set_defaults(func=command_generate)
     for name, help_text, function in (
         ("setup", "configure and build one kernel", command_setup),
         ("test", "build and run one kernel's tests", command_test),

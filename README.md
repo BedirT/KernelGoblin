@@ -159,6 +159,20 @@ saves.
 ./kg validate
 ```
 
+For the normal case, install once and then give KernelGoblin an image:
+
+```sh
+./kg model setup trellis2
+./kg generate trellis2 image.png
+```
+
+That is the complete default 512 image-to-PBR path: Apple Vision foreground
+masking for opaque images, seed 42, 12 steps, 2048 textures, and a reloadable
+GLB. The result is written to `build/trellis2/outputs/image.glb`, with its
+evidence next to it. Repeated `generate` calls reuse the release binary instead
+of asking SwiftPM to rebuild it. The longer `./kg model run trellis2 ...` form
+remains the reproducibility and experiment interface.
+
 TRELLIS.2's own model weights are open under MIT. Its image pipelines also use
 Meta's separately gated DINOv3 encoder. Accept the DINOv3 terms on Hugging Face
 once and provide a read token for installation:
