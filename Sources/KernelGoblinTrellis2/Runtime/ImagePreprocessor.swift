@@ -12,6 +12,10 @@ public enum TrellisOpaqueImagePolicy: Sendable {
     /// This is a native compatibility tier, not a BiRefNet parity claim.
     case appleVisionForegroundMask
 
+    /// Prefer Vision's general foreground instances, then recover with its
+    /// person matting model when stylized character art has no named instance.
+    case automaticForegroundMask
+
     /// Explicit compatibility escape hatch for an already isolated subject.
     ///
     /// This does not perform background removal and must not be presented as equivalent
@@ -150,9 +154,25 @@ public struct TrellisImagePreprocessor: Sendable {
         var hasMeaningfulAlpha = stride(from: 3, to: rgba.count, by: 4)
             .contains { rgba[$0] != 255 }
         let hadSuppliedAlpha = hasMeaningfulAlpha
-        if !hasMeaningfulAlpha, opaquePolicy == .appleVisionForegroundMask {
-            try applyVisionForegroundMask(to: &rgba, image: image)
-            hasMeaningfulAlpha = true
+        var backgroundRemoval = "none-explicit"
+        if !hasMeaningfulAlpha {
+            switch opaquePolicy {
+            case .appleVisionForegroundMask:
+                try applyVisionForegroundMask(to: &rgba, image: image)
+                hasMeaningfulAlpha = true
+                backgroundRemoval = "Apple-Vision-foreground-instance-mask"
+            case .automaticForegroundMask:
+                do {
+                    try applyVisionForegroundMask(to: &rgba, image: image)
+                    backgroundRemoval = "Apple-Vision-foreground-instance-mask"
+                } catch TrellisImagePreprocessorError.backgroundRemovalFailed {
+                    try applyVisionPersonMask(to: &rgba, image: image)
+                    backgroundRemoval = "Apple-Vision-person-segmentation-fallback"
+                }
+                hasMeaningfulAlpha = true
+            case .requireMeaningfulAlpha, .acceptWithoutBackgroundRemoval:
+                break
+            }
         }
         let prepared: RGBImage
         if hasMeaningfulAlpha {
@@ -182,11 +202,7 @@ public struct TrellisImagePreprocessor: Sendable {
             decodedWidth: image.width,
             decodedHeight: image.height,
             usedMeaningfulAlpha: hasMeaningfulAlpha,
-            backgroundRemoval: hadSuppliedAlpha
-                ? "supplied-alpha"
-                : (opaquePolicy == .appleVisionForegroundMask
-                    ? "Apple-Vision-foreground-instance-mask"
-                    : "none-explicit")
+            backgroundRemoval: hadSuppliedAlpha ? "supplied-alpha" : backgroundRemoval
         )
     }
 
@@ -225,6 +241,108 @@ public struct TrellisImagePreprocessor: Sendable {
                 }
             }
         } catch {
+            throw TrellisImagePreprocessorError.backgroundRemovalFailed
+        }
+    }
+
+    private func applyVisionPersonMask(
+        to rgba: inout [UInt8], image: CGImage
+    ) throws {
+        let request = VNGeneratePersonSegmentationRequest()
+        request.qualityLevel = .accurate
+        request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        let saliencyRequest = VNGenerateObjectnessBasedSaliencyImageRequest()
+        do {
+            try VNImageRequestHandler(cgImage: image).perform([request, saliencyRequest])
+            guard let mask = request.results?.first?.pixelBuffer,
+                  let salientObjects = saliencyRequest.results?.first?.salientObjects,
+                  let bounds = union(of: salientObjects.map(\.boundingBox)) else {
+                throw TrellisImagePreprocessorError.backgroundRemovalFailed
+            }
+            try applyScaledMask(
+                mask, to: &rgba, width: image.width, height: image.height,
+                normalizedTargetBounds: bounds
+            )
+        } catch {
+            throw TrellisImagePreprocessorError.backgroundRemovalFailed
+        }
+    }
+
+    private func union(of rectangles: [CGRect]) -> CGRect? {
+        guard var result = rectangles.first else { return nil }
+        for rectangle in rectangles.dropFirst() {
+            result = result.union(rectangle)
+        }
+        return result.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+
+    private func applyScaledMask(
+        _ mask: CVPixelBuffer, to rgba: inout [UInt8], width: Int, height: Int,
+        normalizedTargetBounds: CGRect
+    ) throws {
+        guard CVPixelBufferGetPixelFormatType(mask) == kCVPixelFormatType_OneComponent8,
+              CVPixelBufferLockBaseAddress(mask, .readOnly) == kCVReturnSuccess,
+              let base = CVPixelBufferGetBaseAddress(mask) else {
+            throw TrellisImagePreprocessorError.backgroundRemovalFailed
+        }
+        defer { CVPixelBufferUnlockBaseAddress(mask, .readOnly) }
+        let maskWidth = CVPixelBufferGetWidth(mask)
+        let maskHeight = CVPixelBufferGetHeight(mask)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(mask)
+        guard maskWidth > 0, maskHeight > 0 else {
+            throw TrellisImagePreprocessorError.backgroundRemovalFailed
+        }
+        let values = base.assumingMemoryBound(to: UInt8.self)
+        var sourceMinimumX = maskWidth
+        var sourceMinimumY = maskHeight
+        var sourceMaximumX = -1
+        var sourceMaximumY = -1
+        for y in 0..<maskHeight {
+            for x in 0..<maskWidth where values[y * bytesPerRow + x] > 8 {
+                sourceMinimumX = min(sourceMinimumX, x)
+                sourceMinimumY = min(sourceMinimumY, y)
+                sourceMaximumX = max(sourceMaximumX, x)
+                sourceMaximumY = max(sourceMaximumY, y)
+            }
+        }
+        guard sourceMaximumX >= sourceMinimumX, sourceMaximumY >= sourceMinimumY else {
+            throw TrellisImagePreprocessorError.backgroundRemovalFailed
+        }
+        let targetMinimumX = max(0, Int((normalizedTargetBounds.minX * Double(width)).rounded(.down)))
+        let targetMaximumX = min(
+            width - 1, Int((normalizedTargetBounds.maxX * Double(width)).rounded(.up))
+        )
+        // Vision rectangles use a lower-left origin; decoded RGBA uses top-left.
+        let targetMinimumY = max(
+            0, Int(((1 - normalizedTargetBounds.maxY) * Double(height)).rounded(.down))
+        )
+        let targetMaximumY = min(
+            height - 1, Int(((1 - normalizedTargetBounds.minY) * Double(height)).rounded(.up))
+        )
+        guard targetMaximumX > targetMinimumX, targetMaximumY > targetMinimumY else {
+            throw TrellisImagePreprocessorError.backgroundRemovalFailed
+        }
+        var foregroundPixels = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                var alpha = 0
+                if x >= targetMinimumX, x <= targetMaximumX,
+                   y >= targetMinimumY, y <= targetMaximumY {
+                    let maskX = sourceMinimumX + (x - targetMinimumX)
+                        * (sourceMaximumX - sourceMinimumX) / (targetMaximumX - targetMinimumX)
+                    let maskY = sourceMinimumY + (y - targetMinimumY)
+                        * (sourceMaximumY - sourceMinimumY) / (targetMaximumY - targetMinimumY)
+                    alpha = values[maskY * bytesPerRow + maskX] > 8 ? 255 : 0
+                }
+                if alpha > 204 { foregroundPixels += 1 }
+                let offset = (y * width + x) * 4
+                rgba[offset] = UInt8(Int(rgba[offset]) * alpha / 255)
+                rgba[offset + 1] = UInt8(Int(rgba[offset + 1]) * alpha / 255)
+                rgba[offset + 2] = UInt8(Int(rgba[offset + 2]) * alpha / 255)
+                rgba[offset + 3] = UInt8(alpha)
+            }
+        }
+        guard foregroundPixels > 0 else {
             throw TrellisImagePreprocessorError.backgroundRemovalFailed
         }
     }

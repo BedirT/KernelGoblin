@@ -166,7 +166,7 @@ enum KernelGoblinTrellis2Command {
         let opaquePolicy: TrellisOpaqueImagePolicy = options.flag("accept-opaque")
             ? .acceptWithoutBackgroundRemoval
             : (options.flag("require-alpha")
-                ? .requireMeaningfulAlpha : .appleVisionForegroundMask)
+                ? .requireMeaningfulAlpha : .automaticForegroundMask)
         let progress = PipelineConsoleProgress(totalStages: geometryOnly ? 8 : 10)
         let generationStarted = Date()
         printGenerationHeader(
@@ -252,7 +252,7 @@ enum KernelGoblinTrellis2Command {
         let opaquePolicy: TrellisOpaqueImagePolicy = options.flag("accept-opaque")
             ? .acceptWithoutBackgroundRemoval
             : (options.flag("require-alpha")
-                ? .requireMeaningfulAlpha : .appleVisionForegroundMask)
+                ? .requireMeaningfulAlpha : .automaticForegroundMask)
         var memory = Trellis2MemoryBudget()
         if let value = options.value("max-stage-memory-gib") {
             guard let gib = Int(value), (1...24).contains(gib) else {
@@ -443,6 +443,7 @@ enum KernelGoblinTrellis2Command {
     private static func foregroundDescription(for policy: TrellisOpaqueImagePolicy) -> String {
         switch policy {
         case .appleVisionForegroundMask: "automatic Apple Vision background removal"
+        case .automaticForegroundMask: "automatic native background removal"
         case .requireMeaningfulAlpha: "use the image's alpha mask"
         case .acceptWithoutBackgroundRemoval: "keep the input background"
         }

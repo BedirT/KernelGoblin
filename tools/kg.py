@@ -168,6 +168,8 @@ def native_source_errors() -> list[str]:
             errors.append(f"native source root does not exist: {source_root}")
             continue
         for source in sorted(item for item in root.rglob("*") if item.is_file()):
+            if source.name == ".DS_Store":
+                continue
             relative = source.relative_to(ROOT)
             if source.suffix not in TRELLIS_NATIVE_EXTENSIONS:
                 errors.append(f"native source has forbidden extension: {relative}")
@@ -1088,6 +1090,9 @@ def main() -> None:
         raise SystemExit(f"required tool not found: {error.filename}") from error
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.returncode) from error
+    except KeyboardInterrupt:
+        print("\nStopped.", file=sys.stderr)
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":
