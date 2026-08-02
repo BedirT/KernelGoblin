@@ -237,7 +237,7 @@ hash are in
 | --- | --- | --- |
 | Native RNG vs PyTorch RNG | Same numeric seed does not produce the upstream noise stream | `--seed` is stable native reproducibility; oracle fixtures inject captured upstream values |
 | BF16 reduction order | Small per-call differences feed back through later denoising calls | Teacher-forced conformance and free-running structural IoU are reported separately |
-| Apple Vision vs RMBG | Foreground matte can differ around hair, transparency, or ambiguous backgrounds | Alpha input can be required; Vision is the documented native portability policy |
+| Apple Vision vs RMBG | Foreground matte can differ around hair, transparency, or ambiguous backgrounds | The default tries foreground instances then person matting; alpha input can be required for a pinned matte |
 | Model I/O/per-face atlas vs CuMesh | Seams and texel efficiency differ | Never lose topology; record implementation and UV fingerprint; CuMesh parity remains a quality gate |
 | Supplied UV preservation | Useful extension differs from pinned upstream default regeneration | `regenerate` is the closer parity policy; preservation is explicitly user-selected |
 | Metal UV raster vs nvdiffrast | Edge coverage and interpolation can differ | Analytic Metal contracts pass; representative CUDA golden coverage remains open |

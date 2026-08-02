@@ -166,9 +166,12 @@ For the normal case, install once and then give KernelGoblin an image:
 ./kg generate trellis2 image.png
 ```
 
-That is the complete default 512 image-to-PBR path: Apple Vision foreground
-masking for opaque images, seed 42, 12 steps, 2048 textures, and a reloadable
-GLB. The result is written to `build/trellis2/outputs/image.glb`, with its
+That is the complete default 512 image-to-PBR path: native foreground masking
+for opaque images, seed 42, 12 steps, 2048 textures, and a reloadable GLB.
+Vision first looks for a foreground instance; for stylized character art that
+has no recognized instance, the happy path automatically retries Apple's
+person matting model. The result is written to
+`build/trellis2/outputs/image.glb`, with its
 evidence next to it. Repeated `generate` calls reuse the release binary instead
 of asking SwiftPM to rebuild it. The longer `./kg model run trellis2 ...` form
 remains the reproducibility and experiment interface.
@@ -237,7 +240,9 @@ Texture an existing mesh from a reference image:
   --texture-size 2048
 ```
 
-Opaque inputs use Apple Vision foreground masking by default. Use
+Opaque inputs use native automatic foreground masking by default. Vision tries
+its general foreground-instance model first and falls back to person matting
+for stylized character art. Use
 `--require-alpha` when an alpha matte is part of your input contract, or
 `--accept-opaque` only when the background is already harmless.
 
@@ -327,8 +332,9 @@ point paths.
 - Native `--seed` uses documented SplitMix64 plus Box-Muller noise. It is
   deterministic across native runs, but the same number does not reproduce
   PyTorch's RNG stream.
-- Apple Vision foreground masking is a portable native policy, not numerical
-  parity with upstream RMBG.
+- Apple Vision foreground masking, including the automatic person-matting
+  fallback, is a portable native policy, not numerical parity with upstream
+  RMBG.
 - Supplied UVs can be preserved as a useful extension. Pinned upstream
   texturing regenerates its atlas through CuMesh.
 - Model I/O unwrap is used only when it preserves all valid faces. A

@@ -154,7 +154,8 @@ The Swift package contains:
   channel-to-spatial topology;
 - complete DINOv3, sparse-structure, SLat flow, shape encoder, shape decoder,
   and guided texture decoder graphs;
-- native image preprocessing with an Apple Vision foreground-mask policy;
+- native image preprocessing with Apple Vision foreground-instance masking and
+  an automatic person-matting fallback for stylized character art;
 - a pure Swift O-Voxel flexible-dual-grid voxelizer and mesh builder;
 - topology-safe hole filling and UV preparation;
 - Metal UV rasterization and sparse half-voxel PBR sampling;
