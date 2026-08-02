@@ -32,9 +32,10 @@ reloadable GLB export on Apple Silicon.
   223,711 source faces remained 223,711 output faces, two 2048 PBR textures
   reloaded from the GLB, maximum RSS was 3.04 GB, and the process recorded zero
   swaps.
-- Native 512 image-to-PBR generation completed a real default 12-step run: a
-  3,370,530-face GLB with two embedded 2048 PBR textures reloaded both natively
-  and through Assimp, with zero swaps.
+- Native 512 image-to-PBR generation completed a real default 12-step run and
+  produced a reloadable 3,370,530-face GLB with two embedded 2048 PBR textures
+  and zero swaps. A later topology audit found that reload validation is not a
+  sufficient geometry-quality gate; upstream CUDA-quality parity remains open.
 - The optional Torch/MPS environment is an isolated oracle. Default install,
   test, generation, and texturing commands are native.
 
@@ -94,7 +95,7 @@ full-model claim.
 
 | Tier | What it means | TRELLIS.2 today |
 | --- | --- | --- |
-| End-to-end verified | Default settings, real checkpoints, physical backend, artifact reload | Native 512 image-to-PBR, native existing-mesh texturing; Torch/MPS 512 and 1024-cascade oracles |
+| End-to-end artifact verified | Default settings, real checkpoints, physical backend, artifact reload | Native 512 image-to-PBR and existing-mesh texturing; topology quality gap remains open |
 | Production-stage verified | Complete real stage and checkpoint execute with authenticated comparisons | DINOv3, both 30-block flows, sparse structure flow/decoder, shape encoder |
 | Analytic or tiny-fixture verified | Real backend and exact contract, deliberately small workload | Shape and guided texture decoders, Morton coding, UV raster, sparse attention, O-Voxel mesh extraction, PBR bake and GLB packing |
 | Outside the current native scope | Available only through an explicitly named reference path | Native 1024/cascade modes remain oracle-only |
@@ -120,6 +121,9 @@ Some useful numbers from the physical M3 Pro verification:
 The detailed ledger, exact hashes, timing boundaries, and semantic gaps live in
 [`docs/TRELLIS2_PORT.md`](docs/TRELLIS2_PORT.md). The machine-readable source of
 truth is [`ports/trellis2/model.toml`](ports/trellis2/model.toml).
+The reproduced native mesh-quality failure, measured boundary/non-manifold
+counts, and corrective order are documented in
+[`docs/evidence/trellis2-native-geometry-quality-gap-2026-08-01.md`](docs/evidence/trellis2-native-geometry-quality-gap-2026-08-01.md).
 The performance story, including the original bottleneck and the honest
 `840.812s -> 125.813s` sparse-flow comparison, is documented separately in
 [`docs/evidence/trellis2-performance-progression-m3pro-2026-08-01.md`](docs/evidence/trellis2-performance-progression-m3pro-2026-08-01.md).
